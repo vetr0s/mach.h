@@ -130,7 +130,7 @@ the library-update steps.
 
 ## Versioning
 
-Current version: **v0.1.1**
+Current version: **v0.1.2**
 
 mach.h grew out of (and still powers) a factory-builder game; the engine now
 lives here on its own. History from before the split is in that project's log.

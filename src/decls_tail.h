@@ -88,10 +88,10 @@ typedef struct {
     b32 running;
     Mach_Color clear_color;
     b32   escape_quits;
-    u32   frame_cap_ms;    // 0 = uncapped
-    u32 frame_start;       // tick at the current frame's start (for the cap)
-    u32 last_frame_time;   // tick at the previous frame's start (for dt)
-    u32 fps_timer;         // start of the current 1s FPS sampling window
+    u64   frame_cap_ns;    // 0 = uncapped; nanoseconds per frame at the target rate
+    u64 frame_start;       // tick (ns) at the current frame's start (for the cap)
+    u64 last_frame_time;   // tick (ns) at the previous frame's start (for dt)
+    u64 fps_timer;         // tick (ns) at the start of the current 1s FPS window
     i32 frame_count;       // frames seen in the current window
 } Mach;
 

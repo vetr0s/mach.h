@@ -44,7 +44,7 @@
 // Semantic versioning: MAJOR.MINOR.PATCH
 #define MACH_VERSION_MAJOR 0
 #define MACH_VERSION_MINOR 1
-#define MACH_VERSION_PATCH 1
+#define MACH_VERSION_PATCH 2
 
 // Sized integer aliases. Define MACH_INT_DEFINED before including mach.h if
 // your project already typedefs these names (they must match these widths).
@@ -22388,10 +22388,10 @@ typedef struct {
     b32 running;
     Mach_Color clear_color;
     b32   escape_quits;
-    u32   frame_cap_ms;    // 0 = uncapped
-    u32 frame_start;       // tick at the current frame's start (for the cap)
-    u32 last_frame_time;   // tick at the previous frame's start (for dt)
-    u32 fps_timer;         // start of the current 1s FPS sampling window
+    u64   frame_cap_ns;    // 0 = uncapped; nanoseconds per frame at the target rate
+    u64 frame_start;       // tick (ns) at the current frame's start (for the cap)
+    u64 last_frame_time;   // tick (ns) at the previous frame's start (for dt)
+    u64 fps_timer;         // tick (ns) at the start of the current 1s FPS window
     i32 frame_count;       // frames seen in the current window
 } Mach;
 
@@ -31328,13 +31328,33 @@ u32 mach_ticks_ms(void) {
 #endif
 }
 
-static void mach_sleep_ms(u32 ms) {
+// The frame loop times itself in nanoseconds, not milliseconds: the cap period
+// for a target rate is 1e9 / fps, and rates whose period isn't a whole
+// millisecond (144 fps = 6.944 ms, 30 fps = 33.333 ms) can't be represented in
+// integer ms without biasing the rate. The underlying clocks are already sub-ms
+// (QPC, CLOCK_MONOTONIC), so this just stops truncating their resolution away.
+static u64 mach_ticks_ns(void) {
 #if defined(_WIN32)
-    Sleep(ms);
+    LARGE_INTEGER freq, count;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return (u64)count.QuadPart * 1000000000ull / (u64)freq.QuadPart;
 #else
     struct timespec ts;
-    ts.tv_sec = (time_t)(ms / 1000u);
-    ts.tv_nsec = (long)((ms % 1000u) * 1000000L);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (u64)ts.tv_sec * 1000000000ull + (u64)ts.tv_nsec;
+#endif
+}
+
+static void mach_sleep_ns(u64 ns) {
+#if defined(_WIN32)
+    // Windows Sleep is 1ms-granular (RGFW calls timeBeginPeriod(1)); round to the
+    // nearest ms so a sub-ms remainder yields rather than busy-waits.
+    Sleep((DWORD)((ns + 500000ull) / 1000000ull));
+#else
+    struct timespec ts;
+    ts.tv_sec  = (time_t)(ns / 1000000000ull);
+    ts.tv_nsec = (long)(ns % 1000000000ull);
     nanosleep(&ts, NULL);
 #endif
 }
@@ -31386,9 +31406,9 @@ b32 mach_init(Mach *m, Mach_Config cfg) {
 
     m->clear_color = cfg.clear_color;
     m->escape_quits = cfg.escape_quits;
-    m->frame_cap_ms = cfg.target_fps > 0 ? 1000u / (u32)cfg.target_fps : 0;
+    m->frame_cap_ns = cfg.target_fps > 0 ? 1000000000ull / (u64)cfg.target_fps : 0;
 
-    u32 now = mach_ticks_ms();
+    u64 now = mach_ticks_ns();
     m->running = MACH_TRUE;
     m->dt = 0.0f;
     m->fps = 0;
@@ -31420,8 +31440,8 @@ b32 mach_running(const Mach *m) {
 // events (quit, Escape, resize) are consumed here; everything else folds into
 // m->input for the game to read.
 void mach_frame_begin(Mach *m) {
-    m->frame_start = mach_ticks_ms();
-    f32 dt = (f32)(m->frame_start - m->last_frame_time) / 1000.0f;
+    m->frame_start = mach_ticks_ns();
+    f32 dt = (f32)(m->frame_start - m->last_frame_time) / 1000000000.0f;
     if (dt > MACH_MAX_DT) dt = MACH_MAX_DT;
     m->dt = dt;
     m->last_frame_time = m->frame_start;
@@ -31453,16 +31473,16 @@ void mach_frame_end(Mach *m) {
     mach_r2d_present(&m->r2d);
 
     m->frame_count++;
-    u32 now = mach_ticks_ms();
-    if (now - m->fps_timer >= 1000) {
+    u64 now = mach_ticks_ns();
+    if (now - m->fps_timer >= 1000000000ull) {
         m->fps = m->frame_count;
         m->frame_count = 0;
         m->fps_timer = now;
     }
 
-    u32 frame_time = mach_ticks_ms() - m->frame_start;
-    if (m->frame_cap_ms && frame_time < m->frame_cap_ms) {
-        mach_sleep_ms(m->frame_cap_ms - frame_time);
+    u64 frame_time = mach_ticks_ns() - m->frame_start;
+    if (m->frame_cap_ns && frame_time < m->frame_cap_ns) {
+        mach_sleep_ns(m->frame_cap_ns - frame_time);
     }
 }
 
