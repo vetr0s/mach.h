@@ -1,5 +1,10 @@
 // mach.h — a small 2D game engine in one header. C99.
 //
+// >>> GENERATED FILE — do not edit mach.h by hand. <<<
+// It is stitched from src/ (mach's own code) and vendor/ (the embedded
+// third-party libraries) by scripts/amalgamate.sh. Edit the parts and rerun
+// that script; direct edits here are overwritten on the next regenerate.
+//
 // RGFW opens the window and delivers input; on top of that sits mach's own
 // OpenGL 3.3 core batch renderer (one shader, one draw stream), a bitmap font,
 // stb_image loading, a Clay UI binding, arenas, and the frame loop.
@@ -39,7 +44,7 @@
 // Semantic versioning: MAJOR.MINOR.PATCH
 #define MACH_VERSION_MAJOR 0
 #define MACH_VERSION_MINOR 1
-#define MACH_VERSION_PATCH 0
+#define MACH_VERSION_PATCH 1
 
 // Sized integer aliases. Define MACH_INT_DEFINED before including mach.h if
 // your project already typedefs these names (they must match these widths).

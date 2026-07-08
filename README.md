@@ -93,14 +93,40 @@ Design rules the header holds itself to:
 
 ## Embedded third parties
 
-Each is pasted verbatim into its own banner-marked section of `mach.h`, license
-text intact. See LICENSE for the notices.
+Each is vendored verbatim (license text intact) as a pristine file under
+`vendor/`, and stitched into `mach.h` by the amalgamation step below. See
+LICENSE for the notices and `vendor/README.md` for how to update one.
 
 | library | what for | license | author |
 |---|---|---|---|
 | [RGFW](https://github.com/ColleagueRiley/RGFW) | windowing, input, GL context | zlib | ColleagueRiley |
 | [Clay](https://github.com/nicbarker/clay) (v0.14) | UI layout | zlib | Nic Barker |
 | [stb_image](https://github.com/nothings/stb) (v2.30) | image loading | public domain / MIT | Sean Barrett |
+
+## Working on the engine
+
+`mach.h` is a **generated, committed artifact** — one file to ship, so consumers
+still just copy it and compile. You don't develop in it. The sources are:
+
+```
+src/       mach's own code (~1.9k lines), split into parts
+vendor/    the three dependencies, pristine upstream bodies
+scripts/amalgamate.sh    stitches src/ + vendor/ -> mach.h (order in scripts/manifest.txt)
+```
+
+The other ~94% of `mach.h`'s size is those three vendored libraries; mach's own
+code is the ~1.9k lines in `src/`. Edit `src/` (or drop a new release into
+`vendor/`), then regenerate:
+
+```
+scripts/amalgamate.sh          # rewrite mach.h from the parts
+scripts/check_generated.sh     # verify mach.h matches src/ + vendor/ (run in CI)
+scripts/check_namespace.sh     # namespace guard against OS-header collisions
+```
+
+`check_generated.sh` fails if `mach.h` was hand-edited or left stale after a
+part changed. See `src/README.md` and `vendor/README.md` for the part layout and
+the library-update steps.
 
 ## Versioning
 

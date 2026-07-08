@@ -1,0 +1,16 @@
+src/preamble.h
+src/base.h
+src/debug.h
+src/vendor_rgfw_pre.h
+vendor/RGFW.h
+src/vendor_rgfw_post.h
+src/interfaces.h
+src/vendor_clay_pre.h
+vendor/clay.h
+src/vendor_clay_post.h
+src/decls_tail.h
+src/impl_mem_math.h
+src/vendor_stb_pre.h
+vendor/stb_image.h
+src/vendor_stb_post.h
+src/impl_tail.h
