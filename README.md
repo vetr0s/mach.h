@@ -8,6 +8,11 @@ embedded), a UI layout binding (Clay, embedded), arena allocators, and a frame
 loop. There is nothing to install and nothing else to download: copy `mach.h`
 into your project and compile.
 
+> [!WARNING]
+> **Personal project, under active development.** This is a hobby project, not a
+> commercial or professional product. It changes frequently, isn't stable, and
+> carries no support or warranty: expect breaking changes and rough edges.
+
 ```c
 #define MACH_IMPLEMENTATION
 #include "mach.h"
