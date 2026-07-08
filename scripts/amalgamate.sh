@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# amalgamate.sh — stitch src/ and vendor/ into the single-file mach.h.
+# amalgamate.sh: stitch src/ and vendor/ into the single-file mach.h.
 #
 # mach.h is a GENERATED artifact. Do not edit it by hand; edit the parts in
 # src/ (mach's own code) or drop a new upstream release into vendor/, then run

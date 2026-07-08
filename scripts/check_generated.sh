@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_generated.sh — fail if mach.h is out of sync with src/ and vendor/.
+# check_generated.sh: fail if mach.h is out of sync with src/ and vendor/.
 #
 # Run in CI (and locally before committing) so a hand-edit to mach.h, or a
 # forgotten regenerate after touching a part, cannot land. Regenerates into a
@@ -19,7 +19,7 @@ if cmp -s "$committed" "$regen"; then
 else
   echo "check_generated: mach.h is STALE ❌" >&2
   echo "  regenerate it with: scripts/amalgamate.sh" >&2
-  echo "  (do not edit mach.h directly — edit src/ or vendor/)" >&2
+  echo "  (do not edit mach.h directly; edit src/ or vendor/)" >&2
   diff "$committed" "$regen" | head -40 >&2 || true
   exit 1
 fi

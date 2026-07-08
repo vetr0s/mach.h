@@ -1,6 +1,6 @@
-// mach.h — a small 2D game engine in one header. C99.
+// mach.h: a small 2D game engine in one header. C99.
 //
-// >>> GENERATED FILE — do not edit mach.h by hand. <<<
+// >>> GENERATED FILE: do not edit mach.h by hand. <<<
 // It is stitched from src/ (mach's own code) and vendor/ (the embedded
 // third-party libraries) by scripts/amalgamate.sh. Edit the parts and rerun
 // that script; direct edits here are overwritten on the next regenerate.
@@ -16714,7 +16714,7 @@ void RGFW_load_Wayland(void) {
 //
 // Modeled on Tsoding's arena.h (https://github.com/tsoding/arena). An allocation
 // bumps a cursor inside the current region; when a region fills, a larger one is
-// chained on. Individual allocations are never freed on their own — you reset the
+// chained on. Individual allocations are never freed on their own; you reset the
 // arena (keep the memory, reuse it) or free it whole. That trades fine-grained
 // frees for near-zero bookkeeping and no fragmentation, which fits allocations
 // that share a lifetime: a world, a level, per-frame scratch.
@@ -16790,7 +16790,7 @@ Mach_Vec2 mach_vec2_lerp(Mach_Vec2 a, Mach_Vec2 b, f32 t);
 
 // Mach_Color type and the stock palette.
 //
-// Mach_Color is Mach_Vec4 RGBA in [0,1] — the exact type every r2d call takes — under the
+// Mach_Color is Mach_Vec4 RGBA in [0,1] (the exact type every r2d call takes) under the
 // name that says what it is. The palette is modus-vivendi (Protesilaos Stavrou's
 // Emacs theme, https://protesilaos.com/emacs/modus-themes): WCAG-AAA-contrast
 // colors designed for a black background, which is exactly what a game HUD wants.
@@ -16933,7 +16933,7 @@ static inline Mach_Color mach_color_lerp(Mach_Color a, Mach_Color b, f32 t) {
 // The renderer declares exactly the entry points and constants it uses instead
 // of pulling in platform GL headers. mach_r2d_init fills the function table through
 // RGFW's proc loader once the context exists; the table lives inside the
-// Mach_Renderer struct — pointer-passed like all engine state — so a hot-reloaded
+// Mach_Renderer struct (pointer-passed like all engine state) so a hot-reloaded
 // game library draws through the pointers the host loaded.
 
 
@@ -17089,7 +17089,7 @@ typedef struct {
     f32  zoom;
 } Mach_Camera2D;
 
-// One vertex of the batch. Everything — fills, text, sprites — draws through
+// One vertex of the batch. Everything (fills, text, sprites) draws through
 // the same shader; untextured shapes sample a 1x1 white texture.
 typedef struct {
     f32   x, y;   // window points; the shader maps to clip space
@@ -22342,7 +22342,7 @@ static inline Clay_Color mach_clay_color_of(Mach_Color c) {
 // =============================================================================
 
 // Core engine lifecycle and the frame loop. The game owns the loop and calls
-// three functions; everything a frame produces — input, dt, fps — is read off
+// three functions; everything a frame produces (input, dt, fps) is read off
 // the Mach struct. This is the whole program:
 //
 //     Mach m = {0};
@@ -22403,7 +22403,7 @@ void mach_shutdown(Mach *m);
 b32  mach_running(const Mach *m);
 
 // Start a frame: reset the frame arena, drain events into m->input (consuming
-// window lifecycle — quit, Escape, resize), set m->dt, clear the screen.
+// window lifecycle: quit, Escape, resize), set m->dt, clear the screen.
 void mach_frame_begin(Mach *m);
 
 // Finish a frame: present, update the FPS sample, sleep off the frame cap.
@@ -22435,7 +22435,7 @@ u32  mach_ticks_ms(void);
 
 #include <stdlib.h>
 
-// (npt): Default region size in words. 8K words is 64 KiB on a 64-bit target —
+// (npt): Default region size in words. 8K words is 64 KiB on a 64-bit target:
 // big enough that most arenas live in one region, small enough to not over-commit.
 #define MACH_ARENA_REGION_CAPACITY (8 * 1024)
 
@@ -31297,7 +31297,7 @@ void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r) {
 // The engine exposes the frame loop as discrete steps; the game owns the loop in
 // main() and calls them. The engine keeps window lifecycle and frame timing.
 //
-// RGFW's implementation compiles here — this file is the single home of the
+// RGFW's implementation compiles here; this file is the single home of the
 // windowing layer, the way clay_ui.c owns Clay and image.c owns stb_image.
 // Everything else includes engine/rgfw.h for declarations only.
 
@@ -31314,7 +31314,7 @@ void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r) {
 // (npt): The Win32 branches lean on RGFW's implementation include above already
 // having pulled in windows.h; QPC/Sleep are core kernel32 so WIN32_LEAN_AND_MEAN
 // doesn't hide them. RGFW also calls timeBeginPeriod(1), which makes Sleep
-// 1ms-granular — good enough for the soft frame cap.
+// 1ms-granular, good enough for the soft frame cap.
 u32 mach_ticks_ms(void) {
 #if defined(_WIN32)
     LARGE_INTEGER freq, count;

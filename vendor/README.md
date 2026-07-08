@@ -1,8 +1,8 @@
-# vendor/ — embedded third-party libraries
+# vendor/: embedded third-party libraries
 
 These are the pristine upstream bodies of mach's three dependencies. They are
 pasted in verbatim and stitched into `mach.h` by `scripts/amalgamate.sh`. They
-are **not** modified by mach — the mach-side wrapping around each (the warning
+are **not** modified by mach; the mach-side wrapping around each (the warning
 pragmas, the `#define` that turns on its implementation, the banner comments)
 lives in the `src/vendor_*_pre.h` / `src/vendor_*_post.h` parts, so updating a
 library does not disturb it.

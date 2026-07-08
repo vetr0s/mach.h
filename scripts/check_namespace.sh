@@ -6,7 +6,7 @@
 # The OS names are faked so the check runs on any dev box: a collision like an
 # unprefixed `Font` type vs X11's `typedef XID Font` fails here without needing
 # a Linux machine. Faking them *before* mach.h is deliberately worse than the
-# real include order — anything that passes here survives the real headers.
+# real include order; anything that passes here survives the real headers.
 #
 # Usage: scripts/check_namespace.sh   (from anywhere; exits nonzero on collision)
 

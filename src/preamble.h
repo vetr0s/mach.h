@@ -1,6 +1,6 @@
-// mach.h — a small 2D game engine in one header. C99.
+// mach.h: a small 2D game engine in one header. C99.
 //
-// >>> GENERATED FILE — do not edit mach.h by hand. <<<
+// >>> GENERATED FILE: do not edit mach.h by hand. <<<
 // It is stitched from src/ (mach's own code) and vendor/ (the embedded
 // third-party libraries) by scripts/amalgamate.sh. Edit the parts and rerun
 // that script; direct edits here are overwritten on the next regenerate.

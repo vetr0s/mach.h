@@ -6,7 +6,7 @@
 //
 // Modeled on Tsoding's arena.h (https://github.com/tsoding/arena). An allocation
 // bumps a cursor inside the current region; when a region fills, a larger one is
-// chained on. Individual allocations are never freed on their own — you reset the
+// chained on. Individual allocations are never freed on their own; you reset the
 // arena (keep the memory, reuse it) or free it whole. That trades fine-grained
 // frees for near-zero bookkeeping and no fragmentation, which fits allocations
 // that share a lifetime: a world, a level, per-frame scratch.
@@ -82,7 +82,7 @@ Mach_Vec2 mach_vec2_lerp(Mach_Vec2 a, Mach_Vec2 b, f32 t);
 
 // Mach_Color type and the stock palette.
 //
-// Mach_Color is Mach_Vec4 RGBA in [0,1] — the exact type every r2d call takes — under the
+// Mach_Color is Mach_Vec4 RGBA in [0,1] (the exact type every r2d call takes) under the
 // name that says what it is. The palette is modus-vivendi (Protesilaos Stavrou's
 // Emacs theme, https://protesilaos.com/emacs/modus-themes): WCAG-AAA-contrast
 // colors designed for a black background, which is exactly what a game HUD wants.
@@ -225,7 +225,7 @@ static inline Mach_Color mach_color_lerp(Mach_Color a, Mach_Color b, f32 t) {
 // The renderer declares exactly the entry points and constants it uses instead
 // of pulling in platform GL headers. mach_r2d_init fills the function table through
 // RGFW's proc loader once the context exists; the table lives inside the
-// Mach_Renderer struct — pointer-passed like all engine state — so a hot-reloaded
+// Mach_Renderer struct (pointer-passed like all engine state) so a hot-reloaded
 // game library draws through the pointers the host loaded.
 
 
@@ -381,7 +381,7 @@ typedef struct {
     f32  zoom;
 } Mach_Camera2D;
 
-// One vertex of the batch. Everything — fills, text, sprites — draws through
+// One vertex of the batch. Everything (fills, text, sprites) draws through
 // the same shader; untextured shapes sample a 1x1 white texture.
 typedef struct {
     f32   x, y;   // window points; the shader maps to clip space

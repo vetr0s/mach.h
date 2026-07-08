@@ -1,4 +1,4 @@
-# mach.h — engine roadmap
+# mach.h: engine roadmap
 
 Engine work only. The game that drives these requirements has its own repo and
 its own TODO.
@@ -9,10 +9,10 @@ its own TODO.
 
 ## Rendering
 - [ ] Sprite batching / atlas support for many entities
-- [ ] (later) Real 3D — only when there's a concrete need and the GPU grasp to own it
+- [ ] (later) Real 3D: only when there's a concrete need and the GPU grasp to own it
 
 ## Math
-- [ ] 3D vector/matrix math — returns with 3D, if it does
+- [ ] 3D vector/matrix math: returns with 3D, if it does
 
 ## Content
 - [ ] Asset loading pipeline

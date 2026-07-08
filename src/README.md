@@ -1,8 +1,8 @@
-# src/ — mach's own source
+# src/: mach's own source
 
 The engine's own code (~1.9k lines), split into the parts that
-`scripts/amalgamate.sh` stitches — together with the pristine libraries in
-`vendor/` — into the single-file `mach.h`. **Edit here, not in `mach.h`**
+`scripts/amalgamate.sh` stitches (together with the pristine libraries in
+`vendor/`) into the single-file `mach.h`. **Edit here, not in `mach.h`**
 (which is generated); then run `scripts/amalgamate.sh`.
 
 `mach.h` is emitted in two phases, mirroring the file's structure: the public
@@ -12,7 +12,7 @@ the `MACH_IMPLEMENTATION` guard). The parts, in assembly order
 
 | part | phase | contents |
 |---|---|---|
-| `preamble.h` | — | file banner, `#ifndef MACH_H` |
+| `preamble.h` | banner | file banner, `#ifndef MACH_H` |
 | `base.h` | interface | sized-int aliases, version macros |
 | `debug.h` | interface | `MACH_LOG_*`, `MACH_DEBUG_ASSERT` |
 | `vendor_rgfw_pre.h` | interface | RGFW glue (defines, warning pragmas) → wraps `vendor/RGFW.h` |
@@ -27,7 +27,7 @@ the `MACH_IMPLEMENTATION` guard). The parts, in assembly order
 | `impl_tail.h` | impl | image, font, render2d, clay_ui, core, input impls; close guard; license |
 
 The `vendor_*_pre.h` / `_post.h` parts hold the mach-side wrapping so the files
-in `vendor/` stay pristine and updatable — see `vendor/README.md`.
+in `vendor/` stay pristine and updatable; see `vendor/README.md`.
 
 To reorder, add, or remove a part, edit `scripts/manifest.txt` (the order there
 is authoritative) and regenerate.

@@ -5,7 +5,7 @@ A small 2D game engine in one header. C99, zlib license.
 One file is the whole engine: windowing and input (RGFW, embedded), an OpenGL
 3.3 core batch renderer, an 8x8 bitmap font, image loading (stb_image,
 embedded), a UI layout binding (Clay, embedded), arena allocators, and a frame
-loop. There is nothing to install and nothing else to download — copy `mach.h`
+loop. There is nothing to install and nothing else to download: copy `mach.h`
 into your project and compile.
 
 ```c
@@ -105,7 +105,7 @@ LICENSE for the notices and `vendor/README.md` for how to update one.
 
 ## Working on the engine
 
-`mach.h` is a **generated, committed artifact** — one file to ship, so consumers
+`mach.h` is a **generated, committed artifact**: one file to ship, so consumers
 still just copy it and compile. You don't develop in it. The sources are:
 
 ```
@@ -126,7 +126,8 @@ scripts/check_namespace.sh     # namespace guard against OS-header collisions
 
 `check_generated.sh` fails if `mach.h` was hand-edited or left stale after a
 part changed. See `src/README.md` and `vendor/README.md` for the part layout and
-the library-update steps.
+the library-update steps, and `ARCHITECTURE.md` for how the engine is built
+internally (the renderer, memory, the frame loop, the no-global-state rule).
 
 ## Versioning
 

@@ -42,7 +42,7 @@ static inline Clay_Color mach_clay_color_of(Mach_Color c) {
 // =============================================================================
 
 // Core engine lifecycle and the frame loop. The game owns the loop and calls
-// three functions; everything a frame produces — input, dt, fps — is read off
+// three functions; everything a frame produces (input, dt, fps) is read off
 // the Mach struct. This is the whole program:
 //
 //     Mach m = {0};
@@ -103,7 +103,7 @@ void mach_shutdown(Mach *m);
 b32  mach_running(const Mach *m);
 
 // Start a frame: reset the frame arena, drain events into m->input (consuming
-// window lifecycle — quit, Escape, resize), set m->dt, clear the screen.
+// window lifecycle: quit, Escape, resize), set m->dt, clear the screen.
 void mach_frame_begin(Mach *m);
 
 // Finish a frame: present, update the FPS sample, sleep off the frame cap.

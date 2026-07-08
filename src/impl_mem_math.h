@@ -7,7 +7,7 @@
 
 #include <stdlib.h>
 
-// (npt): Default region size in words. 8K words is 64 KiB on a 64-bit target —
+// (npt): Default region size in words. 8K words is 64 KiB on a 64-bit target:
 // big enough that most arenas live in one region, small enough to not over-commit.
 #define MACH_ARENA_REGION_CAPACITY (8 * 1024)
 

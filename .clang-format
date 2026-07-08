@@ -1,0 +1,23 @@
+# Style for mach's own C, the parts under src/. 4-space indent, ~100 columns,
+# opening brace on the same line, no trailing whitespace. The generated mach.h
+# and the pristine vendored bodies are excluded via .clang-format-ignore.
+---
+Language:        Cpp
+BasedOnStyle:    LLVM
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+ColumnLimit:     100
+BreakBeforeBraces: Attach
+PointerAlignment: Right
+DerivePointerAlignment: false
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Empty
+KeepEmptyLinesAtTheStartOfBlocks: false
+SpaceAfterCStyleCast: false
+IndentCaseLabels: false
+SortIncludes: false
+...

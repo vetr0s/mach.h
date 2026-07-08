@@ -738,7 +738,7 @@ void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r) {
 // The engine exposes the frame loop as discrete steps; the game owns the loop in
 // main() and calls them. The engine keeps window lifecycle and frame timing.
 //
-// RGFW's implementation compiles here — this file is the single home of the
+// RGFW's implementation compiles here; this file is the single home of the
 // windowing layer, the way clay_ui.c owns Clay and image.c owns stb_image.
 // Everything else includes engine/rgfw.h for declarations only.
 
@@ -755,7 +755,7 @@ void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r) {
 // (npt): The Win32 branches lean on RGFW's implementation include above already
 // having pulled in windows.h; QPC/Sleep are core kernel32 so WIN32_LEAN_AND_MEAN
 // doesn't hide them. RGFW also calls timeBeginPeriod(1), which makes Sleep
-// 1ms-granular — good enough for the soft frame cap.
+// 1ms-granular, good enough for the soft frame cap.
 u32 mach_ticks_ms(void) {
 #if defined(_WIN32)
     LARGE_INTEGER freq, count;
