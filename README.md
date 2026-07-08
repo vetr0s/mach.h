@@ -130,8 +130,7 @@ the library-update steps.
 
 ## Versioning
 
-Semantic versioning, tracked in `VERSION` and the `MACH_VERSION_*` macros.
-Currently **0.1.0** — the API moves when it needs to.
+Current version: **v0.1.1**
 
 mach.h grew out of (and still powers) a factory-builder game; the engine now
 lives here on its own. History from before the split is in that project's log.
