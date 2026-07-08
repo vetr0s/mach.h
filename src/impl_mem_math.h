@@ -32,7 +32,8 @@ void *mach_arena_alloc(Mach_Arena *a, usize size) {
     if (a->end == NULL) {
         usize capacity = words > MACH_ARENA_REGION_CAPACITY ? words : MACH_ARENA_REGION_CAPACITY;
         a->begin = a->end = mach_region_new(capacity);
-        if (!a->end) return NULL;
+        if (!a->end)
+            return NULL;
     }
 
     // After a reset, `end` points at the first region; walk forward over any
@@ -44,7 +45,8 @@ void *mach_arena_alloc(Mach_Arena *a, usize size) {
         usize capacity = words > MACH_ARENA_REGION_CAPACITY ? words : MACH_ARENA_REGION_CAPACITY;
         a->end->next = mach_region_new(capacity);
         a->end = a->end->next;
-        if (!a->end) return NULL;
+        if (!a->end)
+            return NULL;
     }
 
     void *result = &a->end->data[a->end->count];
@@ -78,29 +80,47 @@ void mach_arena_free(Mach_Arena *a) {
 
 #include <math.h>
 
-f32 mach_min(f32 a, f32 b) { return a < b ? a : b; }
-f32 mach_max(f32 a, f32 b) { return a > b ? a : b; }
-f32 mach_lerp(f32 a, f32 b, f32 t) { return a + (b - a) * t; }
+f32 mach_min(f32 a, f32 b) {
+    return a < b ? a : b;
+}
+f32 mach_max(f32 a, f32 b) {
+    return a > b ? a : b;
+}
+f32 mach_lerp(f32 a, f32 b, f32 t) {
+    return a + (b - a) * t;
+}
 
 f32 mach_clamp(f32 v, f32 lo, f32 hi) {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
+    if (v < lo)
+        return lo;
+    if (v > hi)
+        return hi;
     return v;
 }
 
-Mach_Vec2 mach_vec2_add(Mach_Vec2 a, Mach_Vec2 b)  { return (Mach_Vec2){a.x + b.x, a.y + b.y}; }
-Mach_Vec2 mach_vec2_sub(Mach_Vec2 a, Mach_Vec2 b)  { return (Mach_Vec2){a.x - b.x, a.y - b.y}; }
-Mach_Vec2 mach_vec2_scale(Mach_Vec2 v, f32 s) { return (Mach_Vec2){v.x * s, v.y * s}; }
-f32  mach_vec2_dot(Mach_Vec2 a, Mach_Vec2 b)  { return a.x * b.x + a.y * b.y; }
-f32  mach_vec2_length(Mach_Vec2 v)       { return sqrtf(mach_vec2_dot(v, v)); }
+Mach_Vec2 mach_vec2_add(Mach_Vec2 a, Mach_Vec2 b) {
+    return (Mach_Vec2){a.x + b.x, a.y + b.y};
+}
+Mach_Vec2 mach_vec2_sub(Mach_Vec2 a, Mach_Vec2 b) {
+    return (Mach_Vec2){a.x - b.x, a.y - b.y};
+}
+Mach_Vec2 mach_vec2_scale(Mach_Vec2 v, f32 s) {
+    return (Mach_Vec2){v.x * s, v.y * s};
+}
+f32 mach_vec2_dot(Mach_Vec2 a, Mach_Vec2 b) {
+    return a.x * b.x + a.y * b.y;
+}
+f32 mach_vec2_length(Mach_Vec2 v) {
+    return sqrtf(mach_vec2_dot(v, v));
+}
 
 Mach_Vec2 mach_vec2_normalize(Mach_Vec2 v) {
     f32 len = mach_vec2_length(v);
-    if (len == 0.0f) return (Mach_Vec2){0.0f, 0.0f};
+    if (len == 0.0f)
+        return (Mach_Vec2){0.0f, 0.0f};
     return mach_vec2_scale(v, 1.0f / len);
 }
 
 Mach_Vec2 mach_vec2_lerp(Mach_Vec2 a, Mach_Vec2 b, f32 t) {
     return (Mach_Vec2){mach_lerp(a.x, b.x, t), mach_lerp(a.y, b.y, t)};
 }
-
