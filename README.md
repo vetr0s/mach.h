@@ -2,6 +2,10 @@
 
 A small 2D game engine in one header. C99, zlib license.
 
+[![Linux](https://github.com/vetr0s/mach.h/actions/workflows/linux.yml/badge.svg)](https://github.com/vetr0s/mach.h/actions/workflows/linux.yml)
+[![macOS](https://github.com/vetr0s/mach.h/actions/workflows/macos.yml/badge.svg)](https://github.com/vetr0s/mach.h/actions/workflows/macos.yml)
+[![Windows](https://github.com/vetr0s/mach.h/actions/workflows/windows.yml/badge.svg)](https://github.com/vetr0s/mach.h/actions/workflows/windows.yml)
+
 One file is the whole engine: windowing and input (RGFW, embedded), an OpenGL
 3.3 core batch renderer, an 8x8 bitmap font, image loading (stb_image,
 embedded), a UI layout binding (Clay, embedded), arena allocators, and a frame

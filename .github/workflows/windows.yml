@@ -1,0 +1,30 @@
+name: Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Put cl.exe (and the Windows SDK: opengl32.lib, winmm.lib) on PATH.
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Bootstrap nob
+        run: cl nob.c
+
+      - name: Build examples
+        run: .\nob.exe

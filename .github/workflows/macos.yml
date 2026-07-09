@@ -1,0 +1,27 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cocoa/OpenGL frameworks are part of the SDK; nothing to install.
+      - name: Bootstrap nob
+        run: cc -o nob nob.c
+
+      - name: Build examples
+        run: ./nob

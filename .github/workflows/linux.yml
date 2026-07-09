@@ -1,0 +1,42 @@
+name: Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # RGFW needs the X11/GL dev headers on Linux (the libs ship with the OS).
+      - name: Install X11/GL dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxcursor-dev libgl1-mesa-dev
+
+      - name: Bootstrap nob
+        run: cc -o nob nob.c
+
+      # Compiles every example under examples/ against mach.h: the real
+      # cross-platform check that the RGFW/GL paths still build.
+      - name: Build examples
+        run: ./nob
+
+      # The header is amalgamated from src/ + vendor/; fail if it is stale or if
+      # any engine name collides with the X11/Win32 names RGFW pulls in.
+      - name: Check mach.h is in sync with src/
+        run: ./scripts/check_generated.sh
+
+      - name: Check namespace
+        run: ./scripts/check_namespace.sh
