@@ -56,10 +56,10 @@ Windows:  cl /std:c11 game.c /link opengl32.lib winmm.lib     (gdi32 via #pragma
 On Linux you need the X11/GL dev headers once:
 
 ```
-Void:          sudo xbps-install -S libX11-devel libXrandr-devel libXcursor-devel libglvnd-devel
-Debian/Ubuntu: sudo apt install libx11-dev libxrandr-dev libxcursor-dev libgl1-mesa-dev
-Fedora:        sudo dnf install libX11-devel libXrandr-devel libXcursor-devel mesa-libGL-devel
-Arch:          sudo pacman -S libx11 libxrandr libxcursor mesa
+Void:          sudo xbps-install -S libX11-devel libXrandr-devel libXcursor-devel libXext-devel libXi-devel libglvnd-devel
+Debian/Ubuntu: sudo apt install libx11-dev libxrandr-dev libxcursor-dev libxext-dev libxi-dev libgl1-mesa-dev
+Fedora:        sudo dnf install libX11-devel libXrandr-devel libXcursor-devel libXext-devel libXi-devel mesa-libGL-devel
+Arch:          sudo pacman -S libx11 libxrandr libxcursor libxext libxi mesa
 ```
 
 `examples/hello.c` is the snippet above with a moving square. Build the examples

@@ -19,11 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # RGFW needs the X11/GL dev headers on Linux (the libs ship with the OS).
+      # RGFW needs the X11/GL dev headers on Linux (the libs ship with the OS;
+      # libXi is dlopen'd at runtime, so it needs a header but no link flag).
       - name: Install X11/GL dev headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev libxrandr-dev libxcursor-dev libgl1-mesa-dev
+          sudo apt-get install -y libx11-dev libxrandr-dev libxcursor-dev libxext-dev libxi-dev libgl1-mesa-dev
 
       - name: Bootstrap nob
         run: cc -o nob nob.c
