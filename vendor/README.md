@@ -17,7 +17,7 @@ library does not disturb it.
 
 1. Replace the file here with the new upstream release, unmodified.
 2. Regenerate: `scripts/amalgamate.sh`.
-3. Build and run `examples/build.sh`; run `scripts/check_namespace.sh`.
+3. Build and run the examples (`cc -o nob nob.c && ./nob`); run `scripts/check_namespace.sh`.
 4. If upstream added or renamed the `*_IMPLEMENTATION` macro or its include
    guard, adjust the matching `src/vendor_<lib>_pre.h` / `_post.h` glue.
 

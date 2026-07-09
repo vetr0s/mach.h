@@ -1,5 +1,5 @@
 // The README snippet, made visible: a window, a moving square, text, and the
-// FPS readout. Build it with examples/build.sh (or by hand, see the README).
+// FPS readout. Build it with nob (cc -o nob nob.c, then ./nob), see the README.
 
 #define MACH_IMPLEMENTATION
 #include "mach.h"

@@ -58,8 +58,9 @@ Fedora:        sudo dnf install libX11-devel libXrandr-devel libXcursor-devel me
 Arch:          sudo pacman -S libx11 libxrandr libxcursor mesa
 ```
 
-`examples/hello.c` is the snippet above with a moving square; `examples/build.sh`
-compiles it.
+`examples/hello.c` is the snippet above with a moving square. Build the examples
+with [nob](https://github.com/tsoding/nob.h): `cc -o nob nob.c` once, then `./nob`
+compiles every example under `examples/` into `examples/build/`.
 
 ## What's inside
 
@@ -136,7 +137,7 @@ internally (the renderer, memory, the frame loop, the no-global-state rule).
 
 ## Versioning
 
-Current version: **v0.1.2**
+Current version: **v0.1.3**
 
 mach.h grew out of (and still powers) a factory-builder game; the engine now
 lives here on its own. History from before the split is in that project's log.
