@@ -33,12 +33,15 @@ All three build in CI on every push (linux.yml / macos.yml / windows.yml). The
 checkbox below tracks running on real hardware, which is a separate thing from
 building.
 
+Running the game (which embeds this engine) on a platform exercises that
+platform's backend, so the checkboxes below track the game's v0.6.2 binaries.
+
 - [x] macOS: builds in CI, run on real hardware
-- [ ] Linux: builds in CI, not yet run on real hardware (X11 path; needs
-      libxi-dev and libxext-dev for the XInput2 and shape headers; deps preflight
-      and namespace guard are in place)
-- [ ] Windows: builds in CI, not yet run on real hardware (MSVC; GL loader falls
-      back to GetProcAddress for GL 1.1 entry points, timing uses QPC/Sleep)
+- [x] Linux: builds in CI, run on real hardware (X11 path; needs libxi-dev and
+      libxext-dev for the XInput2 and shape headers; deps preflight and namespace
+      guard are in place)
+- [x] Windows: builds in CI, run on real hardware (MSVC; GL loader falls back to
+      GetProcAddress for GL 1.1 entry points, timing uses QPC/Sleep)
 
 ## Someday / speculative
 
