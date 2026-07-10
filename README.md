@@ -78,7 +78,7 @@ math               Mach_Vec2 + scalar helpers (mach_clamp, mach_lerp, ...)
 color              Mach_Color + a stock palette (modus-vivendi), MACH_COLOR_*
 gl                 the ~40 GL 3.3 core entry points, declared by hand, loaded at runtime
 font               8x8 bitmap font baked into a GL texture atlas
-image (stb)        mach_image_load / mach_image_free
+image (stb)        mach_image_load / mach_image_load_from_memory / mach_image_free
 render2d           the batch renderer: one shader, one draw stream (mach_r2d_*),
                    plus an isometric camera and transforms
 input              per-frame snapshot: key/mouse down, pressed, released, wheel
@@ -141,7 +141,7 @@ internally (the renderer, memory, the frame loop, the no-global-state rule).
 
 ## Versioning
 
-Current version: **v0.1.3**
+Current version: **v0.1.4**
 
 mach.h grew out of (and still powers) a factory-builder game; the engine now
 lives here on its own. History from before the split is in that project's log.

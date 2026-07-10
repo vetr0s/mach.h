@@ -43,7 +43,7 @@
 // Semantic versioning: MAJOR.MINOR.PATCH
 #define MACH_VERSION_MAJOR 0
 #define MACH_VERSION_MINOR 1
-#define MACH_VERSION_PATCH 3
+#define MACH_VERSION_PATCH 4
 
 // Sized integer aliases. Define MACH_INT_DEFINED before including mach.h if
 // your project already typedefs these names (they must match these widths).
@@ -17052,6 +17052,13 @@ typedef struct {
 // Load image from file. Returns image with allocated data, or zeroed struct on failure.
 Mach_Image mach_image_load(const char *path);
 
+// Decode an image already in memory: an encoded PNG/BMP/JPG byte buffer, not raw
+// pixels. For assets baked into the executable, so a program can ship as one
+// self-contained binary with no files to find at runtime. `size` is the encoded
+// buffer's length in bytes. Returns a zeroed struct on failure; the caller still
+// owns `data` and may free it as soon as this returns.
+Mach_Image mach_image_load_from_memory(const void *data, i32 size);
+
 // Free image data.
 void mach_image_free(Mach_Image *img);
 
@@ -17137,10 +17144,15 @@ void mach_r2d_clip_begin(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h);
 void mach_r2d_clip_end(Mach_Renderer *r);
 
 // Textures and sprites (for real art later). Tint multiplies the texture; pass
-// white for none. A zero id means the load failed.
+// white for none. A zero id means the load failed. `nearest` picks nearest-
+// neighbour filtering, which is what pixel art wants; linear blurs it.
 Mach_R2D_Texture mach_r2d_texture_from_pixels(Mach_Renderer *r, const void *rgba, i32 w, i32 h,
                                               b32 nearest);
 Mach_R2D_Texture mach_r2d_load_texture(Mach_Renderer *r, const char *path);
+// Decode an encoded image from memory and upload it in one step. The companion
+// to mach_image_load_from_memory, for assets baked into the executable.
+Mach_R2D_Texture mach_r2d_texture_from_memory(Mach_Renderer *r, const void *data, i32 size,
+                                              b32 nearest);
 void mach_r2d_destroy_texture(Mach_Renderer *r, Mach_R2D_Texture *tex);
 void mach_r2d_sprite(Mach_Renderer *r, Mach_R2D_Texture tex, f32 x, f32 y, f32 scale,
                      Mach_Color tint);
@@ -30579,6 +30591,24 @@ Mach_Image mach_image_load(const char *path) {
     return img;
 }
 
+Mach_Image mach_image_load_from_memory(const void *data, i32 size) {
+    Mach_Image img = {0};
+    if (!data || size <= 0)
+        return img;
+
+    int w, h, channels;
+    u8 *pixels = stbi_load_from_memory((const stbi_uc *)data, (int)size, &w, &h, &channels,
+                                       4); // Force RGBA
+    if (!pixels)
+        return img;
+
+    img.data = pixels;
+    img.width = w;
+    img.height = h;
+    img.channels = 4;
+    return img;
+}
+
 void mach_image_free(Mach_Image *img) {
     if (!img || !img->data)
         return;
@@ -31195,6 +31225,19 @@ Mach_R2D_Texture mach_r2d_load_texture(Mach_Renderer *r, const char *path) {
         return tex;
     }
     tex = mach_r2d_texture_from_pixels(r, img.data, img.width, img.height, MACH_FALSE);
+    mach_image_free(&img);
+    return tex;
+}
+
+Mach_R2D_Texture mach_r2d_texture_from_memory(Mach_Renderer *r, const void *data, i32 size,
+                                              b32 nearest) {
+    Mach_R2D_Texture tex = {0};
+    Mach_Image img = mach_image_load_from_memory(data, size);
+    if (!img.data) {
+        MACH_LOG_ERROR("mach_r2d_texture_from_memory: failed to decode %d bytes", size);
+        return tex;
+    }
+    tex = mach_r2d_texture_from_pixels(r, img.data, img.width, img.height, nearest);
     mach_image_free(&img);
     return tex;
 }

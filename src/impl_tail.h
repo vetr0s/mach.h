@@ -16,6 +16,24 @@ Mach_Image mach_image_load(const char *path) {
     return img;
 }
 
+Mach_Image mach_image_load_from_memory(const void *data, i32 size) {
+    Mach_Image img = {0};
+    if (!data || size <= 0)
+        return img;
+
+    int w, h, channels;
+    u8 *pixels = stbi_load_from_memory((const stbi_uc *)data, (int)size, &w, &h, &channels,
+                                       4); // Force RGBA
+    if (!pixels)
+        return img;
+
+    img.data = pixels;
+    img.width = w;
+    img.height = h;
+    img.channels = 4;
+    return img;
+}
+
 void mach_image_free(Mach_Image *img) {
     if (!img || !img->data)
         return;
@@ -632,6 +650,19 @@ Mach_R2D_Texture mach_r2d_load_texture(Mach_Renderer *r, const char *path) {
         return tex;
     }
     tex = mach_r2d_texture_from_pixels(r, img.data, img.width, img.height, MACH_FALSE);
+    mach_image_free(&img);
+    return tex;
+}
+
+Mach_R2D_Texture mach_r2d_texture_from_memory(Mach_Renderer *r, const void *data, i32 size,
+                                              b32 nearest) {
+    Mach_R2D_Texture tex = {0};
+    Mach_Image img = mach_image_load_from_memory(data, size);
+    if (!img.data) {
+        MACH_LOG_ERROR("mach_r2d_texture_from_memory: failed to decode %d bytes", size);
+        return tex;
+    }
+    tex = mach_r2d_texture_from_pixels(r, img.data, img.width, img.height, nearest);
     mach_image_free(&img);
     return tex;
 }
