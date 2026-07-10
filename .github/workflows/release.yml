@@ -1,0 +1,125 @@
+name: Release
+
+# Cutting a release is: bump VERSION + src/base.h + README, regenerate mach.h,
+# commit, then `git tag v0.1.5 && git push --tags`.
+#
+# The release artifact is mach.h itself: the whole engine is that one file, so
+# the release page is where a consumer downloads it without cloning.
+#
+# This workflow exists because the version numbers drifted from the tags twice:
+# 0.1.2 was bumped in VERSION but never tagged, and v0.1.3 was tagged but never
+# released. verify-version below makes both mistakes impossible to repeat.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # needed to create the release and upload mach.h
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The version lives in four places. They disagree easily, and a consumer who
+  # reads MACH_VERSION_* out of the header should get the number on the tag.
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches VERSION, base.h, mach.h, and README
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(tr -d '[:space:]' < VERSION)"
+
+          # Reassemble major.minor.patch from the macros, in both the part and
+          # the generated header. They are the numbers a consumer actually sees.
+          macros() {
+            awk '/#define MACH_VERSION_MAJOR/ {a=$3}
+                 /#define MACH_VERSION_MINOR/ {b=$3}
+                 /#define MACH_VERSION_PATCH/ {c=$3; print a"."b"."c; exit}' "$1"
+          }
+          base="$(macros src/base.h)"
+          header="$(macros mach.h)"
+
+          fail=0
+          [ "$tag" = "$version" ] || { echo "::error::tag v$tag != VERSION ($version)"; fail=1; }
+          [ "$tag" = "$base" ]    || { echo "::error::tag v$tag != src/base.h ($base)"; fail=1; }
+          [ "$tag" = "$header" ]  || { echo "::error::tag v$tag != mach.h ($header)"; fail=1; }
+          grep -qF "v$version" README.md || { echo "::error::README.md does not mention v$version"; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+          echo "release v$version"
+
+  # mach.h is generated from src/ + vendor/. Publishing a stale header would ship
+  # an engine that does not match its own sources.
+  guards:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install X11/GL dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxcursor-dev libxext-dev libxi-dev libgl1-mesa-dev
+      - name: mach.h is in sync with src/ + vendor/
+        run: ./scripts/check_generated.sh
+      - name: Namespace guard
+        run: ./scripts/check_namespace.sh
+
+  # Compile every example on all three platforms: the real check that the header
+  # we are about to publish actually builds for the people downloading it.
+  examples:
+    needs: verify-version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bootstrap: cc -o nob nob.c
+            build: ./nob
+          - os: macos-latest
+            bootstrap: cc -o nob nob.c
+            build: ./nob
+          - os: windows-latest
+            bootstrap: cl nob.c
+            build: .\nob.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        name: Install X11/GL dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxrandr-dev libxcursor-dev libxext-dev libxi-dev libgl1-mesa-dev
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Bootstrap nob
+        run: ${{ matrix.bootstrap }}
+      - name: Build examples
+        run: ${{ matrix.build }}
+
+  publish:
+    needs: [guards, examples]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Write release notes
+        run: |
+          cat > notes.md <<'EOF'
+          The engine is one file. Download `mach.h`, drop it in your project, compile.
+
+              #define MACH_IMPLEMENTATION
+              #include "mach.h"
+
+          Define `MACH_IMPLEMENTATION` in exactly one translation unit. No build
+          system, no submodules, nothing to install. Link the platform's windowing
+          and GL libraries; see the README for the per-platform line.
+
+          RGFW, Clay, and stb_image are embedded in the header, with their license
+          notices intact.
+          EOF
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" mach.h --title "mach.h $GITHUB_REF_NAME" --notes-file notes.md
