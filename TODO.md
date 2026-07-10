@@ -3,36 +3,52 @@
 Engine work only. The game that drives these requirements has its own repo and
 its own TODO.
 
+## Next
+
+The game is starting real sprite work, so these are the engine's critical path.
+
+- [x] Image decode from memory (`mach_image_load_from_memory`, landing now):
+      lets a consumer bake assets into the executable instead of shipping a
+      directory of PNGs next to the binary. stb_image's `stbi_load_from_memory`
+      was already embedded but sat behind `MACH_IMPLEMENTATION`, so it was not
+      public API; a consumer reaching for it directly would be calling a vendored
+      symbol and breaking the one-way engine/consumer dependency. A companion
+      `mach_r2d_texture_from_memory` (decode + upload in one step) is landing
+      alongside it.
+- [ ] Sprite batching / atlas support: needed once many entities each draw a
+      sprite every frame.
+- [ ] Asset loading pipeline: the broader item the two above feed into.
+
 ## Core
 - [ ] Event system beyond the input snapshot (collision events, user-defined events)
 - [ ] Generational handles for the arena-backed object patterns (stale-id safety)
-
-## Rendering
-- [ ] Sprite batching / atlas support for many entities
-- [ ] (later) Real 3D: only when there's a concrete need and the GPU grasp to own it
-
-## Math
-- [ ] 3D vector/matrix math: returns with 3D, if it does
-
-## Content
-- [ ] Asset loading pipeline
 
 ## Debugging
 - [ ] Debug draw: collision bounds, vectors
 - [ ] Performance profiler
 
-## Audio (later)
+## Platform
+
+All three build in CI on every push (linux.yml / macos.yml / windows.yml). The
+checkbox below tracks running on real hardware, which is a separate thing from
+building.
+
+- [x] macOS: builds in CI, run on real hardware
+- [ ] Linux: builds in CI, not yet run on real hardware (X11 path; needs
+      libxi-dev and libxext-dev for the XInput2 and shape headers; deps preflight
+      and namespace guard are in place)
+- [ ] Windows: builds in CI, not yet run on real hardware (MSVC; GL loader falls
+      back to GetProcAddress for GL 1.1 entry points, timing uses QPC/Sleep)
+
+## Someday / speculative
+
+Ideas, not commitments. Kept here so they are not forgotten, not because they
+are scheduled. Each returns only when a concrete need pulls it in.
+
+- [ ] Real 3D: only when there's a concrete need and the GPU grasp to own it
+- [ ] 3D vector/matrix math: returns with 3D, if it does
 - [ ] Audio system
 - [ ] Sound and music loading
 - [ ] Spatial audio
-
-## Scripting (future)
 - [ ] Embedded Lua integration
 - [ ] Script hot-reload
-
-## Platform
-- [x] macOS: building and running
-- [ ] Linux: verify on real hardware (X11 path; deps preflight and namespace
-      guard are in place, needs an actual build + run)
-- [ ] Windows: verify on real hardware (MSVC; GL loader falls back to
-      GetProcAddress for GL 1.1 entry points, timing uses QPC/Sleep)
