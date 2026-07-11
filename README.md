@@ -62,8 +62,10 @@ Fedora:        sudo dnf install libX11-devel libXrandr-devel libXcursor-devel li
 Arch:          sudo pacman -S libx11 libxrandr libxcursor libxext libxi mesa
 ```
 
-`examples/hello.c` is the snippet above with a moving square. Build the examples
-with [nob](https://github.com/tsoding/nob.h): `cc -o nob nob.c` once, then `./nob`
+`examples/hello.c` is the snippet above with a moving square. `examples/pong.c` is
+a one-player pong — keep the ball alive against the back wall — for input,
+collision, and game state in the same loop. Build the examples with
+[nob](https://github.com/tsoding/nob.h): `cc -o nob nob.c` once, then `./nob`
 compiles every example under `examples/` into `examples/build/`.
 
 ## What's inside
