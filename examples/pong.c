@@ -12,14 +12,14 @@
 
 #include <stdio.h>
 
-#define PADDLE_W      14.0f
-#define PADDLE_H      110.0f
+#define PADDLE_W 14.0f
+#define PADDLE_H 110.0f
 #define PADDLE_MARGIN 40.0f // gap between the paddle and the right edge
-#define PADDLE_SPEED  520.0f
+#define PADDLE_SPEED 520.0f
 
-#define BALL_SIZE     14.0f
-#define BALL_SPEED    340.0f  // serve speed; every paddle hit adds a little
-#define BALL_SPEED_UP 18.0f   // px/s gained per hit
+#define BALL_SIZE 14.0f
+#define BALL_SPEED 340.0f   // serve speed; every paddle hit adds a little
+#define BALL_SPEED_UP 18.0f // px/s gained per hit
 #define BALL_SPEED_MAX 900.0f
 #define BALL_MAX_BOUNCE_ANGLE 1.0f // radians off horizontal at the paddle's tip
 
@@ -33,7 +33,7 @@ typedef enum {
 
 typedef struct {
     Game_State state;
-    f32 paddle_y;  // top of the paddle
+    f32 paddle_y; // top of the paddle
     Mach_Vec2 ball;
     Mach_Vec2 ball_vel;
     f32 ball_speed;
@@ -65,13 +65,15 @@ static f32 text_centered_x(const Mach_Renderer *r, const char *s, f32 scale, f32
 
 int main(void) {
     Mach m = {0};
+    // No target_fps: vsync paces the loop at the display's rate. Everything below
+    // moves in px/s against m.dt, so the game plays the same at 60 or 144.
     if (!mach_init(&m, (Mach_Config){
-            .title = "pong - mach",
-            .width = 960,
-            .height = 640,
-            .target_fps = 60,
-            .escape_quits = 1,
-        })) return 1;
+                           .title = "pong - mach",
+                           .width = 960,
+                           .height = 640,
+                           .escape_quits = 1,
+                       }))
+        return 1;
 
     Game g = {0};
     reset(&g, (f32)m.r2d.height);
@@ -86,8 +88,10 @@ int main(void) {
 
         // --- update ---------------------------------------------------------
         f32 move = 0.0f;
-        if (in->key_down[RGFW_keyW] || in->key_down[RGFW_keyUp]) move -= 1.0f;
-        if (in->key_down[RGFW_keyS] || in->key_down[RGFW_keyDown]) move += 1.0f;
+        if (in->key_down[RGFW_keyW] || in->key_down[RGFW_keyUp])
+            move -= 1.0f;
+        if (in->key_down[RGFW_keyS] || in->key_down[RGFW_keyDown])
+            move += 1.0f;
         g.paddle_y = mach_clamp(g.paddle_y + move * PADDLE_SPEED * m.dt, 0.0f, fh - PADDLE_H);
 
         switch (g.state) {
@@ -95,7 +99,8 @@ int main(void) {
             // Ride the paddle until the serve.
             g.ball.x = paddle_x - BALL_SIZE;
             g.ball.y = g.paddle_y + PADDLE_H * 0.5f - BALL_SIZE * 0.5f;
-            if (in->key_pressed[RGFW_keySpace]) g.state = STATE_PLAY;
+            if (in->key_pressed[RGFW_keySpace])
+                g.state = STATE_PLAY;
             break;
 
         case STATE_PLAY: {
@@ -134,7 +139,8 @@ int main(void) {
                 g.ball.x = paddle_x - BALL_SIZE;
 
                 g.score++;
-                if (g.score > g.best) g.best = g.score;
+                if (g.score > g.best)
+                    g.best = g.score;
             }
 
             // Past the paddle: a life, and back to the serve.
@@ -149,7 +155,8 @@ int main(void) {
         } break;
 
         case STATE_OVER:
-            if (in->key_pressed[RGFW_keyR]) reset(&g, fh);
+            if (in->key_pressed[RGFW_keyR])
+                reset(&g, fh);
             break;
         }
 
@@ -168,7 +175,10 @@ int main(void) {
         char buf[64];
         snprintf(buf, sizeof buf, "score %d", g.score);
         mach_r2d_text(&m.r2d, 20, 20, 2, buf, MACH_COLOR_FG_MAIN);
-        snprintf(buf, sizeof buf, "best %d   lives %d   fps %d", g.best, g.lives, m.fps);
+        // fps sits at the cap, so it says nothing about headroom; frame_ms is
+        // the frame's real cost and peak is the worst frame of the last second.
+        snprintf(buf, sizeof buf, "best %d   lives %d   fps %d   %.1fms (peak %.1f)", g.best,
+                 g.lives, m.fps, (f64)m.frame_ms, (f64)m.frame_ms_peak);
         mach_r2d_text(&m.r2d, 20, 48, 1, buf, MACH_COLOR_FG_DIM);
 
         if (g.state == STATE_SERVE) {

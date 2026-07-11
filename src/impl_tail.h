@@ -842,6 +842,9 @@ void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r) {
 
 #include <stdio.h>
 #include <time.h>
+#if !defined(_WIN32)
+#include <sched.h> // sched_yield, for the frame cap's spin tail
+#endif
 
 // RGFW is third-party single-header code, so silence the warnings it trips
 // under -Wall -Wextra rather than let them bury ours.
@@ -852,8 +855,9 @@ void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r) {
 
 // (npt): The Win32 branches lean on RGFW's implementation include above already
 // having pulled in windows.h; QPC/Sleep are core kernel32 so WIN32_LEAN_AND_MEAN
-// doesn't hide them. RGFW also calls timeBeginPeriod(1), which makes Sleep
-// 1ms-granular, good enough for the soft frame cap.
+// doesn't hide them. RGFW also calls timeBeginPeriod(1), which is what keeps
+// Sleep's granularity at 1ms rather than the default ~15.6ms -- the frame cap
+// spins out the last millisecond itself.
 u32 mach_ticks_ms(void) {
 #if defined(_WIN32)
     LARGE_INTEGER freq, count;
@@ -885,17 +889,41 @@ static u64 mach_ticks_ns(void) {
 #endif
 }
 
-static void mach_sleep_ns(u64 ns) {
+// Sleeping is only ever approximate: nanosleep and Sleep guarantee *at least*
+// the requested time and routinely overshoot by a millisecond or more (Sleep is
+// 1ms-granular even with RGFW's timeBeginPeriod(1)). Overshooting the frame
+// deadline is what makes a naive cap miss its target -- ask for 60 and get 58,
+// unevenly. So the wait sleeps to a millisecond short of the deadline and spins
+// out the remainder, trading a sliver of CPU for landing on the mark.
+#define MACH_SPIN_MARGIN_NS 1000000ull // 1ms: the slop we assume a sleep can overshoot by
+
+static void mach_wait_until_ns(u64 deadline) {
+    u64 now = mach_ticks_ns();
+    if (now >= deadline)
+        return;
+
+    u64 remaining = deadline - now;
+    if (remaining > MACH_SPIN_MARGIN_NS) {
+        u64 ns = remaining - MACH_SPIN_MARGIN_NS;
 #if defined(_WIN32)
-    // Windows Sleep is 1ms-granular (RGFW calls timeBeginPeriod(1)); round to the
-    // nearest ms so a sub-ms remainder yields rather than busy-waits.
-    Sleep((DWORD)((ns + 500000ull) / 1000000ull));
+        Sleep((DWORD)(ns / 1000000ull)); // round *down*: never sleep past the deadline
 #else
-    struct timespec ts;
-    ts.tv_sec = (time_t)(ns / 1000000000ull);
-    ts.tv_nsec = (long)(ns % 1000000000ull);
-    nanosleep(&ts, NULL);
+        struct timespec ts;
+        ts.tv_sec = (time_t)(ns / 1000000000ull);
+        ts.tv_nsec = (long)(ns % 1000000000ull);
+        nanosleep(&ts, NULL);
 #endif
+    }
+
+    // The last millisecond, by hand. Yield inside the spin so we don't starve
+    // another runnable thread on a single-core machine.
+    while (mach_ticks_ns() < deadline) {
+#if defined(_WIN32)
+        Sleep(0);
+#else
+        sched_yield();
+#endif
+    }
 }
 
 // Initialize RGFW, create the window from the config (zeroed fields defaulted)
@@ -939,8 +967,13 @@ b32 mach_init(Mach *m, Mach_Config cfg) {
         return MACH_FALSE;
     }
 
-    // Our loop has its own frame cap, so disable vsync and let it govern.
-    RGFW_window_swapInterval_OpenGL(m->window, 0);
+    // Pacing. Vsync is the default: the display is already a clock, and letting
+    // it pace the loop costs no CPU and can't tear. A target_fps means the game
+    // wants a rate the display isn't offering, so vsync comes off and the
+    // deadline cap in mach_frame_end governs instead -- the two would otherwise
+    // fight, each waiting on the other's schedule.
+    b32 vsync = !cfg.vsync_off && cfg.target_fps <= 0;
+    RGFW_window_swapInterval_OpenGL(m->window, vsync ? 1 : 0);
 
     if (!mach_r2d_init(&m->r2d, m->window)) {
         RGFW_window_close(m->window);
@@ -953,11 +986,22 @@ b32 mach_init(Mach *m, Mach_Config cfg) {
     m->escape_quits = cfg.escape_quits;
     m->frame_cap_ns = cfg.target_fps > 0 ? 1000000000ull / (u64)cfg.target_fps : 0;
 
+    if (vsync)
+        MACH_LOG_INFO("pacing: vsync (display rate)");
+    else if (m->frame_cap_ns)
+        MACH_LOG_INFO("pacing: %d fps cap, vsync off", cfg.target_fps);
+    else
+        MACH_LOG_INFO("pacing: uncapped, vsync off");
+
     u64 now = mach_ticks_ns();
     m->running = MACH_TRUE;
     m->dt = 0.0f;
     m->fps = 0;
+    m->frame_ms = 0.0f;
+    m->frame_ms_peak = 0.0f;
+    m->frame_ms_peak_acc = 0.0f;
     m->frame_start = now;
+    m->frame_deadline = now; // the first frame_end advances this by one period
     m->last_frame_time = now;
     m->fps_timer = now;
     m->frame_count = 0;
@@ -1013,22 +1057,47 @@ void mach_frame_begin(Mach *m) {
     mach_r2d_begin(&m->r2d, m->clear_color);
 }
 
-// Finish a frame: present whatever the game rendered, update the 1s FPS sample
-// (read it at m->fps), and sleep to honor the soft frame cap.
+// Finish a frame: present whatever the game rendered, sample how long the frame
+// actually cost, update the 1s FPS window, and wait out the frame cap.
 void mach_frame_end(Mach *m) {
     mach_r2d_present(&m->r2d);
 
+    // The work this frame took, measured before the cap's wait -- this is the
+    // number that says whether there is headroom, and the only one that keeps
+    // saying it once a cap or vsync pins fps to a flat 60. Sampled after
+    // present, so it covers the draw the GPU was handed, not just the update.
+    u64 work_ns = mach_ticks_ns() - m->frame_start;
+    m->frame_ms = (f32)work_ns / 1000000.0f;
+    if (m->frame_ms > m->frame_ms_peak_acc)
+        m->frame_ms_peak_acc = m->frame_ms;
+
+    // FPS and the frame-time peak are both reported over the last completed 1s
+    // window: an average hides the one 12ms frame that hitches, the peak is
+    // what catches it.
     m->frame_count++;
     u64 now = mach_ticks_ns();
     if (now - m->fps_timer >= 1000000000ull) {
         m->fps = m->frame_count;
+        m->frame_ms_peak = m->frame_ms_peak_acc;
         m->frame_count = 0;
+        m->frame_ms_peak_acc = 0.0f;
         m->fps_timer = now;
     }
 
-    u64 frame_time = mach_ticks_ns() - m->frame_start;
-    if (m->frame_cap_ns && frame_time < m->frame_cap_ns) {
-        mach_sleep_ns(m->frame_cap_ns - frame_time);
+    // Pace to an absolute deadline rather than "sleep the remainder of this
+    // frame": a sleep that overshoots by a millisecond would otherwise push the
+    // next frame's deadline out by a millisecond too, and the error would walk.
+    // Anchoring to the deadline lets a long frame be absorbed by the next short
+    // one, so the rate holds. A frame that blows the budget outright (a stall, a
+    // hitch) would leave the deadline in the past and hand us a burst of
+    // zero-length frames to "catch up"; resetting to now when we fall behind
+    // gives up the lost time instead of sprinting after it.
+    if (m->frame_cap_ns) {
+        m->frame_deadline += m->frame_cap_ns;
+        if (now > m->frame_deadline)
+            m->frame_deadline = now;
+        else
+            mach_wait_until_ns(m->frame_deadline);
     }
 }
 

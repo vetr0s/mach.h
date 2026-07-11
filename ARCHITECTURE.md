@@ -98,15 +98,38 @@ from. Consumers make their own arenas for longer-lived data.
 queue into `Mach.input` (a per-frame snapshot the consumer reads as
 `key_pressed[...]`, `mouse_pressed[...]`, `wheel`, ...), consumes window
 lifecycle events (quit, Escape, resize) itself, and clears the screen.
-`mach_frame_end` presents, samples the FPS counter, and sleeps off the soft
-frame cap.
+`mach_frame_end` presents, samples the frame's cost and the FPS counter, and
+waits out the frame cap.
 
 Timing is done in nanoseconds. The cap period is `1e9 / target_fps`, so target
 rates whose frame time isn't a whole millisecond (144 fps is 6.944 ms) are
 honored instead of truncated. The clocks are `clock_gettime(CLOCK_MONOTONIC)`
-and `QueryPerformanceCounter`; the sleep is `nanosleep` (`Sleep`, 1ms-granular,
-on Windows). The cap is soft: it yields the rest of a frame's budget, it doesn't
-spin.
+and `QueryPerformanceCounter`.
+
+Frames are paced by **vsync** by default: the display is already a clock, and
+letting it drive the loop costs no CPU and cannot tear. `target_fps` is for the
+cases where the game wants a rate the display isn't offering (a 30fps lock, a
+capture, a benchmark above the refresh rate) — it turns vsync off and hands
+pacing to the loop's own cap, since the two would otherwise each wait on the
+other's schedule. `vsync_off` with no `target_fps` runs uncapped, which is a
+measurement tool rather than a way to ship.
+
+The cap paces to an **absolute deadline** that advances by one period per frame,
+rather than sleeping the remainder of each frame in isolation. Sleeping is only
+approximate — `nanosleep` and `Sleep` guarantee *at least* what you ask for and
+routinely overshoot by a millisecond — so per-frame sleeps push the next frame
+out by their own error and the rate drifts below target (a 60 cap measured 56.7
+fps). Anchoring to a deadline lets a long frame be absorbed by the next short
+one; the wait then sleeps to a millisecond short of the deadline and spins out
+the remainder, which holds 60.0 fps with ~0.01 ms of jitter. A frame that blows
+its budget outright resets the deadline to now, so a stall can't leave a debt
+that gets repaid as a burst of zero-length frames.
+
+`Mach.frame_ms` is what a frame actually cost (update, draw, present) with the
+cap's wait excluded, and `Mach.frame_ms_peak` is the worst frame of the last
+completed 1s window. These, not `fps`, are the headroom numbers: under a cap
+`fps` reads a flat 60 whether a frame takes 2 ms or 16 ms, and a 1s average
+hides the single long frame that hitches.
 
 ## Design rules
 

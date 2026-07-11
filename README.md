@@ -28,7 +28,7 @@ int main(void) {
     while (mach_running(&m)) {
         mach_frame_begin(&m);   // events -> m.input, m.dt, clear
         mach_r2d_text(&m.r2d, 20, 20, 2, "hello", MACH_COLOR_FG_MAIN);
-        mach_frame_end(&m);     // present, m.fps, frame cap
+        mach_frame_end(&m);     // present, m.fps / m.frame_ms, pacing (vsync)
     }
 
     mach_shutdown(&m);
@@ -143,7 +143,7 @@ internally (the renderer, memory, the frame loop, the no-global-state rule).
 
 ## Versioning
 
-Current version: **v0.1.4**
+Current version: **v0.1.5**
 
 mach.h grew out of (and still powers) a factory-builder game; the engine now
 lives here on its own. History from before the split is in that project's log.
