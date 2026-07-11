@@ -1,10 +1,12 @@
 name: Release
 
-# Cutting a release is: bump VERSION + src/base.h + README, regenerate mach.h,
-# commit, then `git tag v0.1.5 && git push --tags`.
+# Cutting a release is: bump VERSION + src/base.h + README, write the section in
+# CHANGELOG.md, regenerate mach.h, commit, then `git tag v0.1.6 && git push --tags`.
 #
 # The release artifact is mach.h itself: the whole engine is that one file, so
-# the release page is where a consumer downloads it without cloning.
+# the release page is where a consumer downloads it without cloning. The release
+# notes are the version's CHANGELOG.md section (see scripts/release_notes.sh), so
+# the page and the repo tell the same story.
 #
 # This workflow exists because the version numbers drifted from the tags twice:
 # 0.1.2 was bumped in VERSION but never tagged, and v0.1.3 was tagged but never
@@ -50,6 +52,12 @@ jobs:
           grep -qF "v$version" README.md || { echo "::error::README.md does not mention v$version"; fail=1; }
           [ "$fail" -eq 0 ] || exit 1
           echo "release v$version"
+
+      # The notes are written by hand in CHANGELOG.md, so a release can ship
+      # without them. Fail the tag here rather than publish a page that says
+      # nothing about what changed; the same script writes the notes below.
+      - name: CHANGELOG.md has a section for this version
+        run: ./scripts/release_notes.sh "$GITHUB_REF_NAME" > /dev/null
 
   # mach.h is generated from src/ + vendor/. Publishing a stale header would ship
   # an engine that does not match its own sources.
@@ -105,30 +113,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Write release notes
-        run: |
-          cat > notes.md <<'EOF'
-          The engine is one file. Download `mach.h`, drop it in your project, compile.
-
-              #define MACH_IMPLEMENTATION
-              #include "mach.h"
-
-          Define `MACH_IMPLEMENTATION` in exactly one translation unit. No build
-          system, no submodules, nothing to install. Link the platform's windowing
-          and GL libraries; see the README for the per-platform line.
-
-          RGFW, Clay, and stb_image are embedded in the header, with their license
-          notices intact.
-          EOF
+        run: ./scripts/release_notes.sh "$GITHUB_REF_NAME" > notes.md
       # Idempotent: a tag can be force-moved, and re-running must not fail on a
-      # release that already exists. When it does, refresh the attached header
-      # and leave the notes alone, since they may have been edited by hand.
+      # release that already exists. When it does, refresh both the attached
+      # header and the notes from the repo -- CHANGELOG.md is the source of
+      # truth for them now, so a re-run should make the page match it.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "release $GITHUB_REF_NAME exists; refreshing mach.h"
+            echo "release $GITHUB_REF_NAME exists; refreshing mach.h and notes"
             gh release upload "$GITHUB_REF_NAME" mach.h --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
           else
             gh release create "$GITHUB_REF_NAME" mach.h \
               --title "mach.h $GITHUB_REF_NAME" --notes-file notes.md
