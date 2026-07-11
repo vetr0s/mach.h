@@ -1,4 +1,4 @@
-// mach.h: a small 2D game engine in one header. C99.
+// mach.h: a small 2D game engine in one header. Plain C, zlib license.
 //
 // >>> GENERATED FILE: do not edit mach.h by hand. <<<
 // It is stitched from src/ (mach's own code) and vendor/ (the embedded

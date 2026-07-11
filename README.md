@@ -1,6 +1,6 @@
 # mach.h
 
-A small 2D game engine in one header. C99, zlib license.
+A small 2D game engine in one header. Plain C, zlib license.
 
 [![Linux](https://github.com/vetr0s/mach.h/actions/workflows/linux.yml/badge.svg)](https://github.com/vetr0s/mach.h/actions/workflows/linux.yml)
 [![macOS](https://github.com/vetr0s/mach.h/actions/workflows/macos.yml/badge.svg)](https://github.com/vetr0s/mach.h/actions/workflows/macos.yml)
@@ -52,6 +52,12 @@ macOS:    clang -std=c99 game.c -framework Cocoa -framework CoreVideo -framework
 Linux:    clang -std=c99 game.c -lX11 -lXrandr -lGL -lm -ldl
 Windows:  cl /std:c11 game.c /link opengl32.lib winmm.lib     (gdi32 via #pragma comment)
 ```
+
+Those are the flags CI builds with: C99 on clang and gcc, C11 on MSVC. Calling
+the header *strictly* C99 would be overselling it — the `MACH_LOG_*` macros use
+`##__VA_ARGS__`, which every one of those compilers accepts but no C standard
+does, and the embedded libraries are not `-pedantic` clean. It wants a normal C
+compiler, not a particular standard.
 
 On Linux you need the X11/GL dev headers once:
 
