@@ -338,6 +338,133 @@ static void test_font_white_block(void) {
     MACH_FREE(px);
 }
 
+// --- pacing -----------------------------------------------------------------
+//
+// ARCHITECTURE.md makes a specific claim about the frame cap: that anchoring to an
+// absolute deadline holds the target rate, where sleeping the remainder of each frame
+// drifts below it (a 60 cap measuring 56.7). Nothing reproduced that number, which put
+// it in the same category as the claims v0.2.0 spent its time fixing. These tests are
+// the reproduction. They need no window: the cap is arithmetic plus a wait.
+
+// The arithmetic half. Deterministic, so these are hard assertions.
+static void test_pacing_deadline_arithmetic(void) {
+    section("pacing: the deadline advances without drifting");
+
+    const u64 cap = 16666666ull; // 60 fps
+
+    // A frame that finishes early advances the deadline by exactly one period. It does
+    // not get pushed out by however long the frame happened to take.
+    u64 deadline = 1000000000ull;
+    u64 next = mach_pace_advance(deadline, cap, deadline - 5000000ull);
+    CHECK(next == deadline + cap);
+
+    // Over many frames the deadline is the start plus N periods, exactly. This is the
+    // no-drift property: a per-frame sleep would accumulate its overshoot here.
+    u64 start = 1000000000ull;
+    deadline = start;
+    u64 now = start;
+    for (i32 i = 0; i < 600; i++) {
+        deadline = mach_pace_advance(deadline, cap, now);
+        now = deadline; // a frame that lands exactly on the mark
+    }
+    CHECK(deadline == start + 600ull * cap);
+
+    // A frame that blows the budget leaves the deadline in the past. We give up the
+    // lost time instead of chasing it...
+    deadline = start;
+    u64 late = start + cap * 10ull; // a stall ten frames long
+    u64 after = mach_pace_advance(deadline, cap, late);
+    CHECK(after == late);
+
+    // ...so the frame after a stall gets a full period, not a zero-length catch-up
+    // frame. That burst is what "resetting to now" exists to prevent.
+    u64 following = mach_pace_advance(after, cap, late);
+    CHECK(following == late + cap);
+    CHECK(following - late == cap);
+}
+
+// Burn `ns` of wall clock without sleeping: a stand-in for a frame's actual work.
+static void spin_for_ns(u64 ns) {
+    u64 until = mach_ticks_ns() + ns;
+    while (mach_ticks_ns() < until) {
+    }
+}
+
+// The timing half. This one really sleeps, so the hard assertions are the properties
+// that must hold on any machine, and the sharp numbers are printed as well -- a loaded
+// CI runner has every right to be jittery, and a flaky test guards nothing.
+static void test_pacing_holds_the_rate(void) {
+    section("pacing: the cap hits its target rate");
+
+    const u64 cap = 16666666ull;  // 60 fps
+    const u64 work = 4000000ull;  // 4ms of "frame work", so the two loops differ
+    const i32 frames = 30;        // ~0.5s per loop
+
+    // The engine's loop: anchor to an absolute deadline, wait, repeat. This is what
+    // mach_frame_end does, minus the drawing.
+    u64 t0 = mach_ticks_ns();
+    u64 deadline = t0;
+    f64 jitter_sum = 0.0;
+    f64 jitter_max = 0.0;
+    i32 woke_early = 0;
+
+    for (i32 i = 0; i < frames; i++) {
+        spin_for_ns(work);
+
+        u64 now = mach_ticks_ns();
+        deadline = mach_pace_advance(deadline, cap, now);
+        if (now < deadline)
+            mach_wait_until_ns(deadline);
+
+        // The wait must never return before its deadline. If it does, the cap is not a
+        // cap, and every rate the engine reports is fiction.
+        u64 woke = mach_ticks_ns();
+        if (woke < deadline)
+            woke_early++;
+
+        f64 late_ms = (f64)(woke - deadline) / 1000000.0;
+        jitter_sum += late_ms;
+        if (late_ms > jitter_max)
+            jitter_max = late_ms;
+    }
+    f64 anchored_fps = (f64)frames / ((f64)(mach_ticks_ns() - t0) / 1000000000.0);
+    f64 jitter_mean = jitter_sum / (f64)frames;
+
+    // The naive cap, for contrast: do the work, then sleep one period. The period ends
+    // up being work + cap rather than cap, so the rate sits below target no matter how
+    // precise the sleep is -- and the shortfall grows with the work. This is what the
+    // engine did before v0.1.5, and it is why a 60 cap measured 56.7.
+    u64 n0 = mach_ticks_ns();
+    for (i32 i = 0; i < frames; i++) {
+        spin_for_ns(work);
+        mach_wait_until_ns(mach_ticks_ns() + cap);
+    }
+    f64 naive_fps = (f64)frames / ((f64)(mach_ticks_ns() - n0) / 1000000000.0);
+
+    printf("     target   60.00 fps  (16.67ms period, 4.00ms of work per frame)\n");
+    printf("     anchored %6.2f fps  (jitter: %.3f ms mean, %.3f ms max)\n", anchored_fps,
+           jitter_mean, jitter_max);
+    printf("     naive    %6.2f fps  (work + a full period, no anchor)\n", naive_fps);
+
+    // The wait never returns early. Non-negotiable, true on any machine.
+    CHECK(woke_early == 0);
+
+    // The anchored cap holds its target: the work is absorbed, not added on top. Bounds
+    // are generous because a loaded runner can stall a frame, but a regression that
+    // broke the anchoring sags to ~48 fps here, nowhere near this.
+    CHECK(anchored_fps > 57.0);
+    CHECK(anchored_fps < 61.0);
+
+    // The naive loop demonstrably does not, which is the reason the anchor exists.
+    CHECK(naive_fps < anchored_fps);
+
+    // And the wait lands on the deadline rather than wherever the scheduler dropped it.
+    // This is ARCHITECTURE's "~0.01 ms of jitter" claim. The bound is loose enough for a
+    // busy CI box but tight enough to catch the real regression: when the sleep overran
+    // the spin margin and the spin never ran, this measured 1.9 ms.
+    CHECK(jitter_mean < 0.5);
+}
+
 // --- timing -----------------------------------------------------------------
 
 static void test_time_monotonic(void) {
@@ -375,6 +502,8 @@ int main(void) {
     test_font_covers_printable_ascii();
     test_font_white_block();
     test_time_monotonic();
+    test_pacing_deadline_arithmetic();
+    test_pacing_holds_the_rate();
 
     printf("\n%d checks, %d failed\n", checks, failures);
     if (failures) {

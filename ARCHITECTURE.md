@@ -158,16 +158,36 @@ pacing to the loop's own cap, since the two would otherwise each wait on the
 other's schedule. `vsync_off` with no `target_fps` runs uncapped, which is a
 measurement tool rather than a way to ship.
 
-The cap paces to an **absolute deadline** that advances by one period per frame,
-rather than sleeping the remainder of each frame in isolation. Sleeping is only
-approximate — `nanosleep` and `Sleep` guarantee *at least* what you ask for and
-routinely overshoot by a millisecond — so per-frame sleeps push the next frame
-out by their own error and the rate drifts below target (a 60 cap measured 56.7
-fps). Anchoring to a deadline lets a long frame be absorbed by the next short
-one; the wait then sleeps to a millisecond short of the deadline and spins out
-the remainder, which holds 60.0 fps with ~0.01 ms of jitter. A frame that blows
-its budget outright resets the deadline to now, so a stall can't leave a debt
-that gets repaid as a burst of zero-length frames.
+The cap has two halves, and both are load-bearing.
+
+**Where to wait until.** The cap paces to an **absolute deadline** that advances
+by one period per frame, rather than sleeping the remainder of each frame in
+isolation. A naive cap does the work and *then* sleeps a period, so the frame
+takes `work + period` and the rate sits below target no matter how good the sleep
+is — with 4 ms of work against a 60 fps cap, it measures **48.4 fps**. Anchoring
+to a deadline absorbs the work into the period instead, and lets a long frame be
+paid for by the next short one. A frame that blows its budget outright resets the
+deadline to now, so a stall can't leave a debt that gets repaid as a burst of
+zero-length frames.
+
+**How to wait.** Sleeping is only approximate: `nanosleep` and `Sleep` guarantee
+*at least* what you ask for and always overrun. The trap is that the overrun is
+**not a constant** — it scales with the request. Measured on macOS, a 1 ms sleep
+runs over by 0.26 ms, but a 16 ms sleep runs over by 3.6 ms. So "sleep to a fixed
+1 ms short of the deadline, then spin the last millisecond" does not work at 60
+fps: the sleep asks for ~15.6 ms, overshoots the margin outright, and the spin
+that was supposed to land you on the mark never executes. The cap silently
+degrades to whatever the scheduler felt like.
+
+The wait therefore sleeps a *fraction* of what's left and re-measures, looping. It
+never needs to know the overshoot: each pass overshoots by a fraction of a smaller
+number, and the next pass sees the truth and corrects. It converges in a handful
+of syscalls, and the final millisecond is spun by hand.
+
+Together they hold **60.00 fps with ~0.003 ms of mean jitter**. Those are not
+numbers from the author's machine that you have to take on faith —
+`tests/test_core.c` reproduces them, and the jitter assertion fails on the
+single-sleep version of the wait (which measured 1.3 ms). Run `./nob test`.
 
 `Mach.frame_ms` is what a frame actually cost — the update, plus handing the
 draws to the driver — with the vsync and cap waits **excluded**, and

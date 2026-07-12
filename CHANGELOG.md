@@ -12,6 +12,47 @@ Versions before v0.1.5 were backfilled from the commits and the release pages
 after the fact. Their published pages still read as they did at the time; this
 file is the record from here on.
 
+## v0.2.1
+
+**The frame cap's precision was a claim, not a fact — now it's a fact.** v0.2.0
+went looking for docs that outran the code and missed one: ARCHITECTURE said the
+cap "holds 60.0 fps with ~0.01 ms of jitter", and nothing in the repo reproduced
+it. Writing the test that would have found it, found it.
+
+The wait slept to a fixed 1 ms short of the deadline and spun out the last
+millisecond, on the assumption that a sleep overruns by about a millisecond. It
+doesn't: **the overrun scales with the request.** Measured on macOS, a 1 ms sleep
+runs over by 0.26 ms, but a 16 ms sleep runs over by 3.6 ms. At 60 fps the wait
+asks for ~15.6 ms, blows straight past the 1 ms margin, and the spin that was
+supposed to land it on the mark never runs at all. Measured jitter was **1.9 ms**,
+not 0.01 ms — the cap had quietly degraded to whatever the scheduler felt like,
+which is precisely what the spin existed to prevent.
+
+`mach_wait_until_ns` now sleeps a *fraction* of what's left and re-measures, in a
+loop. It never has to know the overshoot: each pass overruns by a fraction of a
+smaller number, and the next pass sees the truth and corrects. It converges in a
+handful of syscalls, and the last millisecond is still spun by hand. Jitter is now
+**0.003 ms mean, 0.044 ms max** — the number ARCHITECTURE has been claiming since
+v0.1.2, delivered for the first time.
+
+**The pacing claims are tested now.** `tests/test_core.c` covers both halves of the
+cap, headless, in CI. The deadline arithmetic (advance by exactly one period, no
+cumulative drift over 600 frames, an overrun gives up the lost time instead of
+handing the game a burst of zero-length catch-up frames) is checked as pure
+arithmetic — `mach_pace_advance` was split out of `mach_frame_end` to make that
+reachable without a window. The timing half asserts the wait never returns early,
+that the cap holds its rate, and that jitter stays under half a millisecond, which
+the pre-fix wait fails. It also prints the numbers, so the claim is reproducible
+rather than trusted: run `./nob test`.
+
+For contrast, the test also runs the naive cap the anchor replaced — do the work,
+then sleep a full period. With 4 ms of work against a 60 fps target it measures
+**48.4 fps**, because the frame takes `work + period` rather than `period`. That is
+the whole reason the deadline is absolute, and now it is a number you can watch
+rather than a paragraph you have to believe.
+
+No API changes.
+
 ## v0.2.0
 
 **Sprite batching, via atlases.** The batch only breaks when the texture id

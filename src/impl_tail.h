@@ -1203,24 +1203,69 @@ static u64 mach_ticks_ns(void) {
 #endif
 }
 
-// Sleeping is only ever approximate: nanosleep and Sleep guarantee *at least*
-// the requested time and routinely overshoot by a millisecond or more (Sleep is
-// 1ms-granular even with RGFW's timeBeginPeriod(1)). Overshooting the frame
-// deadline is what makes a naive cap miss its target -- ask for 60 and get 58,
-// unevenly. So the wait sleeps to a millisecond short of the deadline and spins
-// out the remainder, trading a sliver of CPU for landing on the mark.
-#define MACH_SPIN_MARGIN_NS 1000000ull // 1ms: the slop we assume a sleep can overshoot by
+// Sleeping is only ever approximate: nanosleep and Sleep guarantee *at least* the
+// requested time and routinely overshoot (Sleep is 1ms-granular even with RGFW's
+// timeBeginPeriod(1)). Overshooting the frame deadline is what makes a naive cap miss
+// its target -- ask for 60 and get 58, unevenly. So the wait sleeps most of the way and
+// spins out the last stretch by hand, trading a sliver of CPU for landing on the mark.
+//
+// The trap is *how much* a sleep overshoots by. It is not a constant: measured on macOS,
+// a 1ms sleep runs over by 0.26ms but a 16ms sleep runs over by 3.6ms -- the error scales
+// with the request. So a single sleep to a fixed margin short of the deadline does not
+// work: at 60fps it asks for ~15.6ms, overshoots the margin outright, and the spin that
+// was supposed to land us on the mark never gets to run at all. That is a cap that
+// silently degrades to whatever the scheduler felt like, which is exactly what the spin
+// was there to prevent.
+//
+// Sleeping a *fraction* of what's left, in a loop, fixes it without needing to know the
+// overshoot: each pass overshoots by a fraction of a smaller number, and the next pass
+// re-measures and corrects. It converges in a handful of syscalls, and the last stretch
+// is spun.
+#define MACH_SPIN_MARGIN_NS 1000000ull // 1ms: the stretch we spin rather than sleep
+
+// Advance the frame deadline by one period, giving up any time already lost.
+//
+// This is the half of the cap that keeps the rate honest. Pacing to an *absolute*
+// deadline rather than sleeping the remainder of each frame in isolation is what stops
+// the error walking: a sleep overshoots, so a per-frame sleep pushes the next frame out
+// by its own overshoot, and the rate sags below target. Anchoring lets a long frame be
+// absorbed by the next short one.
+//
+// A frame that blows the budget outright leaves the deadline in the past. Resetting it
+// to `now` gives up the lost time rather than sprinting after it, which would hand the
+// game a burst of zero-length catch-up frames right after a stall -- the worst possible
+// moment for one.
+//
+// Split out as a pure function so tests/test_core.c can check the drift and the overrun
+// behaviour without opening a window.
+static u64 mach_pace_advance(u64 deadline, u64 cap_ns, u64 now) {
+    deadline += cap_ns;
+    if (now > deadline)
+        deadline = now;
+    return deadline;
+}
 
 static void mach_wait_until_ns(u64 deadline) {
-    u64 now = mach_ticks_ns();
-    if (now >= deadline)
-        return;
+    // Sleep down toward the deadline, re-measuring each pass. Asking for half of what is
+    // left means the overshoot is half the error it would otherwise be, and the next
+    // pass sees it and works from the truth rather than from an assumption.
+    for (;;) {
+        u64 now = mach_ticks_ns();
+        if (now >= deadline)
+            return;
 
-    u64 remaining = deadline - now;
-    if (remaining > MACH_SPIN_MARGIN_NS) {
-        u64 ns = remaining - MACH_SPIN_MARGIN_NS;
+        u64 remaining = deadline - now;
+        if (remaining <= MACH_SPIN_MARGIN_NS)
+            break; // close enough: spin the rest
+
+        u64 ns = (remaining - MACH_SPIN_MARGIN_NS) / 2;
+        if (ns == 0)
+            break;
 #if defined(_WIN32)
-        Sleep((DWORD)(ns / 1000000ull)); // round *down*: never sleep past the deadline
+        DWORD ms = (DWORD)(ns / 1000000ull); // round *down*: never sleep past the deadline
+        if (ms == 0)
+            break;
+        Sleep(ms);
 #else
         struct timespec ts;
         ts.tv_sec = (time_t)(ns / 1000000000ull);
@@ -1410,19 +1455,11 @@ void mach_frame_end(Mach *m) {
         m->fps_timer = now;
     }
 
-    // Pace to an absolute deadline rather than "sleep the remainder of this
-    // frame": a sleep that overshoots by a millisecond would otherwise push the
-    // next frame's deadline out by a millisecond too, and the error would walk.
-    // Anchoring to the deadline lets a long frame be absorbed by the next short
-    // one, so the rate holds. A frame that blows the budget outright (a stall, a
-    // hitch) would leave the deadline in the past and hand us a burst of
-    // zero-length frames to "catch up"; resetting to now when we fall behind
-    // gives up the lost time instead of sprinting after it.
+    // Pace to an absolute deadline, not to "the remainder of this frame": see
+    // mach_pace_advance for why the difference is the whole ballgame.
     if (m->frame_cap_ns) {
-        m->frame_deadline += m->frame_cap_ns;
-        if (now > m->frame_deadline)
-            m->frame_deadline = now;
-        else
+        m->frame_deadline = mach_pace_advance(m->frame_deadline, m->frame_cap_ns, now);
+        if (now < m->frame_deadline)
             mach_wait_until_ns(m->frame_deadline);
     }
 }

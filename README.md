@@ -180,7 +180,7 @@ internally (the renderer, memory, the frame loop, the no-global-state rule).
 
 ## Versioning
 
-Current version: **v0.2.0**. What changed in each release is in
+Current version: **v0.2.1**. What changed in each release is in
 [CHANGELOG.md](CHANGELOG.md), which is also what the release pages publish.
 
 mach.h grew out of (and still powers) a factory-builder game; the engine now
