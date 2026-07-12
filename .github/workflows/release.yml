@@ -86,12 +86,15 @@ jobs:
           - os: ubuntu-latest
             bootstrap: cc -o nob nob.c
             build: ./nob
+            test: ./nob test
           - os: macos-latest
             bootstrap: cc -o nob nob.c
             build: ./nob
+            test: ./nob test
           - os: windows-latest
             bootstrap: cl nob.c
             build: .\nob.exe
+            test: .\nob.exe test
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +109,12 @@ jobs:
         run: ${{ matrix.bootstrap }}
       - name: Build examples
         run: ${{ matrix.build }}
+
+      # A release must not publish over a red test. v0.2.1 shipped while macOS and
+      # Windows were failing, because this workflow compiled the examples and ran
+      # nothing -- the same gap the tests were added to close in the first place.
+      - name: Run tests
+        run: ${{ matrix.test }}
 
   publish:
     needs: [guards, examples]
