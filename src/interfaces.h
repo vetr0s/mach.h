@@ -300,6 +300,8 @@ typedef struct Mach_GLApi {
     void (*TexImage2D)(u32 target, i32 level, i32 internal_format, i32 w, i32 h, i32 border,
                        u32 format, u32 type, const void *pixels);
     void (*TexParameteri)(u32 target, u32 pname, i32 param);
+    void (*TexSubImage2D)(u32 target, i32 level, i32 x, i32 y, i32 w, i32 h, u32 format, u32 type,
+                          const void *pixels);
     void (*Uniform1i)(i32 location, i32 v0);
     void (*Uniform2f)(i32 location, f32 v0, f32 v1);
     void (*UseProgram)(u32 program);
@@ -314,6 +316,20 @@ typedef struct {
     f32 w, h;
 } Mach_R2D_Texture;
 
+// A rectangle of a texture: what an atlas hands back, and what the region draws take.
+// Many regions naming one texture is the whole point -- the batch only breaks when the
+// texture id changes, so sprites that share an atlas draw in a single call.
+//
+// UVs are baked in at pack time so a draw stays pure arithmetic, and w/h are the
+// region's pixel size, so `scale` means the same thing it does for a whole texture.
+// This is a value, not a handle: it owns nothing, and it dies with the texture it names.
+typedef struct {
+    u32 tex;    // texture the region lives in; 0 means invalid
+    f32 u0, v0; // normalized UV of the top-left corner
+    f32 u1, v1; // ... and of the bottom-right
+    f32 w, h;   // size in pixels
+} Mach_R2D_Region;
+
 // =============================================================================
 // font: 8x8 bitmap font
 // =============================================================================
@@ -326,6 +342,12 @@ typedef struct {
     Mach_R2D_Texture atlas; // RGBA: white glyph pixels with alpha; tinted per-vertex
     i32 glyph_w, glyph_h;   // glyph cell size in pixels
     i32 advance;            // horizontal step per character
+
+    // The sheet is 16x6 = 96 cells but there are only 95 printable glyphs, so the last
+    // cell is free. It holds a block of opaque white, which is where untextured draws
+    // (fill_rect and friends) sample from by default. That is what lets text and solid
+    // fills share one texture, and therefore one draw call: see Mach_Renderer.white.
+    Mach_R2D_Region white;
 } Mach_Font;
 
 Mach_Font *mach_font_create(struct Mach_Renderer *r);
@@ -395,6 +417,17 @@ typedef struct {
 #define MACH_R2D_MAX_VERTS 8192
 #define MACH_R2D_MAX_INDICES 16384
 
+// Indices are u16, so the vertex ceiling has to fit in one. Raising MACH_R2D_MAX_VERTS
+// past this would silently wrap the index cast in mach_r2d_quad rather than fail, and a
+// wrapped index draws garbage geometry that looks like a renderer bug.
+#if MACH_R2D_MAX_VERTS > 65536
+#error "MACH_R2D_MAX_VERTS must fit in the u16 index type (max 65536)"
+#endif
+
+// How deep clip rects may nest. Clay emits a scissor pair per clipped container, so
+// nesting is not exotic: a scrolling panel inside a scrolling panel is two.
+#define MACH_R2D_MAX_CLIPS 8
+
 typedef struct Mach_Renderer {
     RGFW_window *window;
     Mach_GLApi gl; // loaded GL entry points (see gl.h)
@@ -406,8 +439,17 @@ typedef struct Mach_Renderer {
     // GL objects, created once at init.
     u32 program;
     u32 vao, vbo, ibo;
-    i32 u_screen;           // uniform: logical size, for point -> clip mapping
-    Mach_R2D_Texture white; // 1x1 white, sampled by untextured draws
+    i32 u_screen; // uniform: logical size, for point -> clip mapping
+
+    // Where the untextured draws (fill_rect, fill_poly, poly_outline) get their pixels.
+    // Defaults to the font atlas's white block, so fills batch with text.
+    //
+    // It is a plain field on purpose: point it at an atlas's white block while drawing
+    // that atlas's sprites, and the fills batch with the sprites instead -- no flush
+    // between a sprite and the selection rect drawn over it. Restore it with
+    // `r->white = r->font->white`. Two assignments, no mode flag, and the batching rule
+    // stays something you can see.
+    Mach_R2D_Region white;
 
     // The pending batch: appended by the draw calls, flushed on texture change,
     // scissor change, overflow, or present.
@@ -415,6 +457,22 @@ typedef struct Mach_Renderer {
     i32 vert_count, index_count;
     Mach_R2D_Vertex verts[MACH_R2D_MAX_VERTS];
     u16 indices[MACH_R2D_MAX_INDICES];
+
+    // Draws issued in the last *completed* frame -- one per flush, so this is the
+    // direct readout of how well the frame batched: a run of draws sharing a texture
+    // costs one.
+    //
+    // It reports the previous frame, not the one in progress, for the same reason fps
+    // does: the frame's last flush does not happen until mach_r2d_submit, so a HUD
+    // drawn mid-frame that read a running total would always under-report itself.
+    // Read it, don't write it.
+    i32 draw_calls;
+    i32 draw_calls_acc; // internal: flushes so far in the frame being built
+
+    // The clip stack, in window points. Each entry is already intersected with its
+    // parent, so the top of the stack is the rect actually in force.
+    f32 clips[MACH_R2D_MAX_CLIPS][4]; // x, y, w, h
+    i32 clip_depth;
 } Mach_Renderer;
 
 // Lifecycle. The window must already hold a current GL 3.3 core context.
@@ -427,6 +485,14 @@ void mach_r2d_resized(Mach_Renderer *r);
 
 // Frame.
 void mach_r2d_begin(Mach_Renderer *r, Mach_Color clear);
+
+// Hand the pending batch to the driver, without presenting. Splitting this out of
+// present is what lets the core time a frame's real cost: under vsync the buffer
+// swap blocks until the display is ready, so anything measured across it is
+// measuring the wait, not the work.
+void mach_r2d_submit(Mach_Renderer *r);
+
+// Submit, then swap the buffers. May block: see mach_r2d_submit.
 void mach_r2d_present(Mach_Renderer *r);
 
 // Screen-space primitives. Colors are RGBA in [0,1]; see color.h for the palette.
@@ -437,8 +503,12 @@ void mach_r2d_poly_outline(Mach_Renderer *r, const Mach_Vec2 *pts, i32 n,
                            Mach_Color color); // closed loop, <=16 pts
 void mach_r2d_text(Mach_Renderer *r, f32 x, f32 y, f32 scale, const char *text, Mach_Color color);
 
-// Clip rect in window points (the UI's scissor). Draws between begin/end are
-// clipped; nesting is not supported.
+// Clip rect in window points (the UI's scissor). Draws between begin/end are clipped.
+//
+// Nesting works, up to MACH_R2D_MAX_CLIPS: an inner rect is intersected with the one
+// enclosing it, so a child can only shrink its parent's window, never escape it, and
+// clip_end restores the parent rather than dropping clipping altogether. Clay depends
+// on this -- it emits a scissor pair per clipped container, and they nest.
 void mach_r2d_clip_begin(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h);
 void mach_r2d_clip_end(Mach_Renderer *r);
 
@@ -453,8 +523,74 @@ Mach_R2D_Texture mach_r2d_load_texture(Mach_Renderer *r, const char *path);
 Mach_R2D_Texture mach_r2d_texture_from_memory(Mach_Renderer *r, const void *data, i32 size,
                                               b32 nearest);
 void mach_r2d_destroy_texture(Mach_Renderer *r, Mach_R2D_Texture *tex);
+// Draw a whole texture as one quad. This is the escape hatch for a background image
+// or a one-off; anything drawn many times per frame wants to be an atlas region, or
+// it will break the batch on every call.
 void mach_r2d_sprite(Mach_Renderer *r, Mach_R2D_Texture tex, f32 x, f32 y, f32 scale,
                      Mach_Color tint);
+
+// --- Atlas and regions ------------------------------------------------------
+//
+// The batch only breaks when the texture id changes, so N sprites in N textures cost
+// N draws. Pack them into one atlas and they cost one. That is the entire feature.
+//
+// Deliberately not here, because nothing concrete needs them yet: rotation (this is an
+// isometric engine -- a 90-degree turn is a second baked region, not a runtime
+// transform), flip flags (a horizontal flip is just swapping u0 and u1 on the region
+// you already hold), and sorting (painter's order stands; the consumer sorts).
+
+// A rectangle of a texture you packed yourself, given a pixel rect. This is the whole
+// "I already have a sprite sheet" path: no packer, no engine bookkeeping.
+Mach_R2D_Region mach_r2d_region_of(Mach_R2D_Texture tex, f32 x, f32 y, f32 w, f32 h);
+
+// Draw a region at its own pixel size times `scale`.
+void mach_r2d_region(Mach_Renderer *r, Mach_R2D_Region s, f32 x, f32 y, f32 scale, Mach_Color tint);
+
+// Draw a region stretched into an explicit destination rect (iso tiles, bars).
+void mach_r2d_region_rect(Mach_Renderer *r, Mach_R2D_Region s, f32 x, f32 y, f32 w, f32 h,
+                          Mach_Color tint);
+
+// A transparent gutter between packed regions, so a neighbour's pixels cannot bleed in
+// when the sampler lands between texels at a fractional zoom.
+#define MACH_R2D_ATLAS_PAD 1
+
+// A texture that sprites are packed into at load time, so many sprites share one id and
+// draw in one batch. Shelf-packed: images are placed left to right along a row, and when
+// the row fills a new one starts below the tallest so far. That is near-optimal for
+// same-height art, which is what a tile game has, and it is thirty lines instead of the
+// three hundred a general packer would take.
+//
+// The consumer owns the atlas, exactly like a Mach_Arena: declare it, fill it, destroy
+// it. The engine never tracks it. Regions are values, not handles -- destroying the
+// atlas invalidates every region it ever handed out, and noticing that is the caller's
+// job. It is append-only: no repack, no eviction. To change the art, rebuild it.
+typedef struct {
+    Mach_R2D_Texture tex;  // the texture every region of this atlas names
+    Mach_R2D_Region white; // reserved opaque-white block; see Mach_Renderer.white
+    i32 w, h;              // atlas size in pixels
+    i32 shelf_x;           // cursor along the current shelf
+    i32 shelf_y;           // the current shelf's top edge
+    i32 shelf_h;           // the current shelf's height, padding included
+    i32 count;             // regions packed so far
+} Mach_R2D_Atlas;
+
+// Create an empty w x h atlas, cleared to transparent, nearest-filtered (pixel art).
+// Reserves a small white block as its first region and publishes it as `white`, so
+// untextured fills can be made to batch with this atlas's sprites.
+b32 mach_r2d_atlas_create(Mach_Renderer *r, Mach_R2D_Atlas *a, i32 w, i32 h);
+
+// Pack an image and upload its pixels. Returns the region, or a zeroed one (.tex == 0)
+// if it does not fit. The pixels are copied: the caller still owns `img` and may free it
+// the moment this returns.
+Mach_R2D_Region mach_r2d_atlas_add(Mach_Renderer *r, Mach_R2D_Atlas *a, Mach_Image img);
+
+// Decode and pack in one step, the way mach_r2d_texture_from_memory does.
+Mach_R2D_Region mach_r2d_atlas_add_file(Mach_Renderer *r, Mach_R2D_Atlas *a, const char *path);
+Mach_R2D_Region mach_r2d_atlas_add_memory(Mach_Renderer *r, Mach_R2D_Atlas *a, const void *data,
+                                          i32 size);
+
+// Free the atlas's texture. Every region handed out beforehand is dangling afterwards.
+void mach_r2d_atlas_destroy(Mach_Renderer *r, Mach_R2D_Atlas *a);
 
 // Isometric projection helpers (no Mach_Renderer needed). `elev` is block height in
 // units; the inverse solves on the ground plane (elev 0).
@@ -486,6 +622,7 @@ typedef struct {
     // Keyboard, indexed by RGFW_key. key_pressed excludes OS key repeats.
     u8 key_down[RGFW_keyLast];
     u8 key_pressed[RGFW_keyLast];
+    u8 key_released[RGFW_keyLast];
 
     // Mouse, in render coordinates (window points). wheel is this frame's scroll,
     // positive away from the user.

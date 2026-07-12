@@ -17,19 +17,24 @@
 
 #define MACH_LOG_ERROR(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ##__VA_ARGS__)
 
-// Break into the debugger, per compiler. gcc has no __builtin_debugbreak, so it
-// gets __builtin_trap (kills the process instead of pausing it, but still stops
-// exactly at the failed assertion).
+// Break into the debugger, per compiler. clang spells it __builtin_debugtrap (not
+// __builtin_debugbreak, which is MSVC's name and does not exist as a clang builtin).
+// gcc has neither, so it gets __builtin_trap: that kills the process instead of
+// pausing it, but it still stops exactly at the failed assertion.
 #if defined(_MSC_VER)
 #define MACH_DEBUGBREAK() __debugbreak()
 #elif defined(__clang__)
-#define MACH_DEBUGBREAK() __builtin_debugbreak()
+#define MACH_DEBUGBREAK() __builtin_debugtrap()
 #else
 #define MACH_DEBUGBREAK() __builtin_trap()
 #endif
 
 #ifdef NDEBUG
-#define MACH_DEBUG_ASSERT(x) (void)(x)
+// The operand of sizeof is unevaluated, so the condition does not run in a release
+// build -- MACH_DEBUG_ASSERT(expensive_check(w)) costs nothing and has no side
+// effects. It still counts as a *use* of whatever it names, which keeps -Wunused
+// quiet for variables that only appear inside an assertion.
+#define MACH_DEBUG_ASSERT(x) ((void)sizeof((x) ? 1 : 0))
 #define MACH_LOG_DEBUG(fmt, ...) (void)0
 #else
 #define MACH_DEBUG_ASSERT(x)                                                                       \

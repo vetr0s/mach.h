@@ -46,24 +46,38 @@ hand-edited or left stale after a part changed (run it in CI), and
 Every piece of engine state lives in a struct the consumer owns and passes by
 pointer: the `Mach` struct (window, renderer, input, frame timing, the frame
 arena) and whatever the consumer allocates through the engine. There are no
-file-scope mutable globals in engine code.
+file-scope mutable globals in engine code — not one, including the GL hints RGFW
+retains a pointer to, which is why `Mach.gl_hints` is a field rather than the
+`static` it looks like it wants to be.
 
 This is what makes hot-reload schemes work. Two copies of the engine *code* (a
 host binary and a reloadable game library, each including `mach.h`) can operate
 on one shared set of *data*, because the data is all reachable from pointers the
 host holds. The engine only has to promise it keeps no hidden state of its own;
-the consumer keeps its side of the bargain by not adding any either. The RGFW
-host-side calls (which do touch RGFW's internal globals) all sit behind
-`mach_init` / `mach_frame_*` / `mach_shutdown`, so only the host half ever makes
-them.
+the consumer keeps its side of the bargain by not adding any either.
+
+The **embedded libraries do keep globals** — RGFW's window/context state, and
+Clay's "current context" plus its callback pointers. That is not something mach
+can fix from the outside, so it quarantines them instead: every call that touches
+them sits behind `mach_init` / `mach_frame_*` / `mach_shutdown`, so only the host
+half ever makes one, and `mach_clay_ui_begin` re-points Clay's context every
+frame precisely so a reloaded library (whose globals start empty) picks up the
+host's data rather than its own zeroes. The rule is "mach's own code holds no
+mutable globals", not "no globals exist anywhere in the binary" — the second
+would be a lie, and the whole point of the rule is that you can trust it.
 
 ## Everything is namespaced
 
-Types are `Mach_*`, functions `mach_*`, macros `MACH_*`. Nothing the header
-exports can collide with OS headers (X11's `Font` typedef, `windows.h` macros)
-or with consumer code. `scripts/check_namespace.sh` compiles the header against
-faked X11/Win32 names and fails on any collision, so the guarantee is tested,
-not just intended.
+Types are `Mach_*`, functions `mach_*`, macros `MACH_*`. Nothing under those
+prefixes collides with OS headers (X11's `Font` typedef, `windows.h` macros).
+`scripts/check_namespace.sh` compiles the header against faked X11/Win32 names
+and fails on any collision, so *that* guarantee is tested, not just intended.
+
+It does not test the header against your code, and two things are unprefixed on
+purpose: the scalar aliases (`u8`..`isize`, `b32`). Both have escape hatches
+(`MACH_INT_DEFINED`, `MACH_B32_DEFINED`) precisely because a game is likely to
+have its own. The embedded libraries also export `RGFW_*`, `Clay_*`, `stbi_*`
+and the `GL_*` constants.
 
 ## The renderer
 
@@ -72,6 +86,36 @@ painter's order (submission order is depth order; the consumer sorts when it
 needs to). Fills, text, and sprites are all the same primitive: a quad of
 `Mach_Vertex`. Text is an 8x8 bitmap font baked into a GL texture atlas at init,
 so a string is just more textured quads.
+
+### The batching invariant
+
+The batch is flushed when the texture id changes, the clip changes, the batch
+fills, or the frame ends. **A frame therefore costs one draw call per contiguous
+run of draws that share a texture id.** Painter's order survives it, because a
+flush is a draw, not a reorder.
+
+Everything about atlases follows from that one sentence. N sprites in N textures
+cost N draws; pack them into one `Mach_R2D_Atlas` and they cost one. The subtler
+half is untextured geometry: `mach_r2d_fill_rect` and friends have to sample
+*something*, and if that something is a different texture from the sprites, then
+alternating a sprite and a rect breaks the batch on every single call.
+
+So `white` is not a texture, it is a `Mach_R2D_Region` — a block reserved inside
+an atlas. The font's sheet is 16x6 = 96 cells holding 95 glyphs, so the spare
+cell holds an opaque white block, and `Mach_Renderer.white` points at it by
+default. That alone means text and rectangles share one texture: a Clay HUD of N
+elements went from roughly 2N draw calls to one. Every `Mach_R2D_Atlas` reserves
+a white block of its own, so a consumer drawing world sprites can point
+`r->white` at the world atlas, draw sprites and selection rects interleaved, and
+still pay one draw call — then point it back at the font for the HUD. Two
+assignments, no mode flag, and `Mach_Renderer.draw_calls` tells you whether you
+got it right.
+
+(A region's white UVs are all collapsed onto the block's center rather than
+spanning it. A quad interpolates its UVs across its face, so a spanning rect
+would sample the texel boundary at the quad's edges and, with any floating-point
+slop, bleed the transparent gutter in — a 1px fringe on every filled rectangle.
+A point samples the same opaque texel at every size.)
 
 GL itself is loaded by hand: the ~40 GL 3.3 core entry points the renderer uses
 are declared in the header and resolved at runtime (no GLEW, no GLAD). Isometric
@@ -125,11 +169,24 @@ the remainder, which holds 60.0 fps with ~0.01 ms of jitter. A frame that blows
 its budget outright resets the deadline to now, so a stall can't leave a debt
 that gets repaid as a burst of zero-length frames.
 
-`Mach.frame_ms` is what a frame actually cost (update, draw, present) with the
-cap's wait excluded, and `Mach.frame_ms_peak` is the worst frame of the last
-completed 1s window. These, not `fps`, are the headroom numbers: under a cap
-`fps` reads a flat 60 whether a frame takes 2 ms or 16 ms, and a 1s average
-hides the single long frame that hitches.
+`Mach.frame_ms` is what a frame actually cost — the update, plus handing the
+draws to the driver — with the vsync and cap waits **excluded**, and
+`Mach.frame_ms_peak` is the worst frame of the last completed 1s window. These,
+not `fps`, are the headroom numbers: under vsync or a cap, `fps` reads a flat 60
+whether a frame takes 2 ms or 16 ms, and a 1s average hides the single long frame
+that hitches.
+
+Getting that exclusion right is fiddlier than it sounds, because the buffer swap
+is where vsync blocks. `mach_frame_end` therefore submits the batch, samples the
+clock, and *only then* swaps — which is why `mach_r2d_submit` exists as a
+separate call from `mach_r2d_present`. Sampling after the swap (as the loop did
+before v0.2.0) means `frame_ms` reports the display's refresh period instead of
+the frame's cost: on a 108 Hz panel a trivial frame measured 8.4 ms, when the
+work it did was 0.8 ms.
+
+`frame_ms` is CPU cost, not GPU time. The GPU may still be chewing on the batch
+when the clock is read. It answers "is the CPU keeping up", which is the question
+a game asks first.
 
 ## Design rules
 

@@ -25,3 +25,15 @@ jobs:
 
       - name: Build examples
         run: ./nob
+
+      # Builds and RUNS the unit tests. They never open a window, so they need no
+      # display or GL context.
+      - name: Run tests
+        run: ./nob test
+
+      # The header is amalgamated from src/ + vendor/; fail if it is stale.
+      - name: Check mach.h is in sync with src/
+        run: ./scripts/check_generated.sh
+
+      - name: Check namespace
+        run: ./scripts/check_namespace.sh

@@ -11,8 +11,8 @@
 
 // Semantic versioning: MAJOR.MINOR.PATCH
 #define MACH_VERSION_MAJOR 0
-#define MACH_VERSION_MINOR 1
-#define MACH_VERSION_PATCH 5
+#define MACH_VERSION_MINOR 2
+#define MACH_VERSION_PATCH 0
 
 // Sized integer aliases. Define MACH_INT_DEFINED before including mach.h if
 // your project already typedefs these names (they must match these widths).
@@ -37,7 +37,15 @@ typedef ptrdiff_t isize;
 
 // 32-bit boolean. Used in place of bare `int` for truth values so intent is
 // explicit and consistent across the codebase.
+//
+// This gets its own guard rather than riding along inside MACH_INT_DEFINED:
+// that macro says "I already have u8..isize", which does not imply a b32. A
+// project that has both needs to opt out of both, and one that has only the
+// sized ints still needs us to define this one.
+#ifndef MACH_B32_DEFINED
+#define MACH_B32_DEFINED
 typedef i32 b32;
+#endif // MACH_B32_DEFINED
 #define MACH_TRUE 1
 #define MACH_FALSE 0
 

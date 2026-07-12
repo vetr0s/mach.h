@@ -15,17 +15,25 @@ The game is starting real sprite work, so these are the engine's critical path.
       symbol and breaking the one-way engine/consumer dependency. A companion
       `mach_r2d_texture_from_memory` (decode + upload in one step) is landing
       alongside it.
-- [ ] Sprite batching / atlas support: needed once many entities each draw a
-      sprite every frame.
-- [ ] Asset loading pipeline: the broader item the two above feed into.
+- [x] Sprite batching / atlas support (`Mach_R2D_Atlas`, `Mach_R2D_Region`,
+      landed in v0.2.0): shelf-packed atlas, one draw call for many sprites. The
+      subtler half was `Mach_Renderer.white` becoming a region, so untextured
+      fills batch with whatever atlas is in force instead of splitting the batch
+      on every rect. 1500 sprites + a HUD is 2 draw calls.
+- [ ] Asset loading pipeline: the broader item the above feeds into. The atlas is
+      the runtime half; what's missing is the packaging half (a manifest, baked
+      blobs, hot-reload of art).
 
 ## Core
 - [ ] Event system beyond the input snapshot (collision events, user-defined events)
-- [ ] Generational handles for the arena-backed object patterns (stale-id safety)
+- [ ] Generational handles for the arena-backed object patterns (stale-id safety).
+      Atlas regions are values that dangle when their atlas is destroyed, which is
+      the first concrete case that wants this.
 
 ## Debugging
 - [ ] Debug draw: collision bounds, vectors
-- [ ] Performance profiler
+- [ ] Performance profiler. `Mach_Renderer.draw_calls` and `Mach.frame_ms` /
+      `frame_ms_peak` are the beginnings of one.
 
 ## Platform
 

@@ -12,6 +12,108 @@ Versions before v0.1.5 were backfilled from the commits and the release pages
 after the fact. Their published pages still read as they did at the time; this
 file is the record from here on.
 
+## v0.2.0
+
+**Sprite batching, via atlases.** The batch only breaks when the texture id
+changes, so N sprites in N textures cost N draw calls. `Mach_R2D_Atlas` packs
+them into one texture at load time (shelf packing, which is near-optimal for the
+same-height art a tile game has) and hands back a `Mach_R2D_Region` per sprite.
+`mach_r2d_region` draws one. `mach_r2d_region_of` gives you the same thing from a
+sheet you packed yourself, if you'd rather. `examples/atlas.c` draws 1500 sprites
+in **2 draw calls**, and the count does not grow with the sprite count.
+
+**Untextured fills batch with whatever you're drawing.** This is the half that
+actually mattered. `fill_rect` has to sample *something*, and it used to sample a
+1x1 white texture all its own — so alternating a rect and a sprite, or a rect and
+a label, broke the batch on every single call. A Clay HUD of N elements cost
+about 2N draw calls. Now `Mach_Renderer.white` is a `Mach_R2D_Region`, and it
+points by default at a white block baked into the font sheet's one spare cell
+(16x6 = 96 cells, 95 glyphs). Text and rectangles therefore share a texture:
+`examples/pong` dropped from 2 draw calls to 1. Every atlas reserves a white
+block too, so `m.r2d.white = world.white` makes fills batch with your sprites,
+and `m.r2d.white = m.r2d.font->white` puts it back for the HUD. Two assignments,
+no mode flag. `Mach_Renderer.draw_calls` reports the result, so you can check
+rather than trust.
+
+**`frame_ms` was measuring the vsync wait.** `mach_frame_end` presented the frame
+and *then* sampled the clock — but the buffer swap is exactly where vsync blocks,
+so the wait landed inside the measurement. With vsync on (the default since
+v0.1.5) `frame_ms` reported the display's refresh period no matter what the frame
+actually cost: on a 108 Hz panel a trivial frame measured **8.4 ms** when its real
+work was **0.8 ms**. It now submits, samples, and only then swaps, which is why
+`mach_r2d_submit` exists as a call separate from `mach_r2d_present`. The number
+that v0.1.5 shipped as its headline feature now means what it said it meant.
+
+**The arena no longer corrupts itself when malloc fails.** A failed region
+allocation left `end` NULL while `begin` still pointed at the live chain, so the
+*next* allocation took the empty-arena path and overwrote `begin` — orphaning
+every region and invalidating every pointer the caller was still holding. A
+failed `mach_arena_alloc` now returns NULL and leaves the arena exactly as it
+was.
+
+**The keyboard has a release edge.** `Mach_Input.key_released` exists, which the
+README has been claiming for some time while the struct had no such field. Also,
+`escape_quits` no longer swallows the Escape keypress before the input snapshot
+sees it.
+
+**The font has all 95 of its glyphs.** 21 were missing — `? ' " = @ [ ] _ ~` and
+others — and `mach_font_glyph_uv` returned success for them anyway, so
+`mach_r2d_text(..., "what?")` silently rendered `what ` with no way to detect it.
+
+**Nested clips work.** `mach_r2d_clip_end` used to disable the scissor test
+outright, so an inner `clip_end` destroyed the enclosing clip and the rest of the
+outer container drew unclipped. Clay emits a scissor pair per clipped container
+and they nest, so this was reachable from any scrolling panel inside another.
+There is a clip stack now (8 deep), and an inner rect is intersected with its
+parent.
+
+**Tests.** `tests/test_core.c` — the first in this repo. It covers the arena
+(including the out-of-memory path, through a new `MACH_MALLOC` / `MACH_CALLOC` /
+`MACH_FREE` hook), the math and iso transforms, the color helpers, and the font
+atlas. It needs no display, and `./nob test` runs it in CI on all three
+platforms, which is the first time CI has executed engine code rather than merely
+compiled it. The arena and font tests both fail on v0.1.5, which is the point of
+them.
+
+**CI builds with gcc.** It never did, despite the README saying so: `nob.c`
+hardcoded clang on Linux, and gcc only ever compiled the build tool. `nob` now
+honors `$CC`, so `cc -o nob nob.c && ./nob` also works on a box that has gcc and
+no clang — which the README's own instructions previously did not.
+
+Smaller things: `MACH_DEBUG_ASSERT` no longer *evaluates* its condition in
+`NDEBUG` builds (it expanded to `(void)(x)`, so a release build still ran the
+check); `MACH_DEBUGBREAK` used `__builtin_debugbreak`, which is not a clang
+builtin and had never been compiled; a failed `mach_r2d_init` cleans up after
+itself instead of leaking shaders and GL objects; `mach_r2d_destroy_texture`
+flushes the batch before deleting a texture the batch is still naming.
+
+Docs: the README and ARCHITECTURE claims were audited against the code, and the
+ones that outran it were fixed — in the code where the claim was the right
+intent, in the prose where it wasn't. `src/` is ~2.7k lines, not 1.9k. The
+"no mutable global state" rule is now literally true of engine code (the GL hints
+RGFW retains a pointer to moved into `Mach`); what the *embedded* libraries keep,
+and how it's quarantined, is now stated rather than glossed. Linux is X11.
+
+### Upgrading from v0.1.5
+
+Three things a consumer can notice:
+
+- **`frame_ms` will read lower**, often much lower, because it no longer includes
+  the vsync wait. That is the fix, not a regression. If you were treating it as a
+  frame-period number, you want `1000.0f / m.fps` instead.
+- **`Mach_Renderer.white` changed type**, from `Mach_R2D_Texture` to
+  `Mach_R2D_Region`. Reading `r->white.id` becomes `r->white.tex`. Most consumers
+  never touched it.
+- **`b32` is now guardable.** It sat outside the `MACH_INT_DEFINED` guard, so a
+  project with its own `b32` got a redefinition error — a hard error in C99, the
+  standard the build lines ask for. Define `MACH_B32_DEFINED` to opt out. It has
+  its own guard because `MACH_INT_DEFINED` means "I have `u8`..`isize`", which
+  doesn't imply you have a `b32`.
+
+`Mach_Font` gained a `white` field, and `Mach_Renderer` gained `draw_calls`,
+`clips`, and `clip_depth`. If you were zero-initializing these structs (`Mach m =
+{0};`, as the README shows), nothing changes.
+
 ## v0.1.5
 
 **Frames are paced by vsync now.** A default `Mach_Config{}` syncs to the

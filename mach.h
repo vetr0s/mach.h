@@ -42,8 +42,8 @@
 
 // Semantic versioning: MAJOR.MINOR.PATCH
 #define MACH_VERSION_MAJOR 0
-#define MACH_VERSION_MINOR 1
-#define MACH_VERSION_PATCH 5
+#define MACH_VERSION_MINOR 2
+#define MACH_VERSION_PATCH 0
 
 // Sized integer aliases. Define MACH_INT_DEFINED before including mach.h if
 // your project already typedefs these names (they must match these widths).
@@ -68,7 +68,15 @@ typedef ptrdiff_t isize;
 
 // 32-bit boolean. Used in place of bare `int` for truth values so intent is
 // explicit and consistent across the codebase.
+//
+// This gets its own guard rather than riding along inside MACH_INT_DEFINED:
+// that macro says "I already have u8..isize", which does not imply a b32. A
+// project that has both needs to opt out of both, and one that has only the
+// sized ints still needs us to define this one.
+#ifndef MACH_B32_DEFINED
+#define MACH_B32_DEFINED
 typedef i32 b32;
+#endif // MACH_B32_DEFINED
 #define MACH_TRUE 1
 #define MACH_FALSE 0
 
@@ -93,19 +101,24 @@ typedef i32 b32;
 
 #define MACH_LOG_ERROR(fmt, ...) fprintf(stderr, "[ERROR] " fmt "\n", ##__VA_ARGS__)
 
-// Break into the debugger, per compiler. gcc has no __builtin_debugbreak, so it
-// gets __builtin_trap (kills the process instead of pausing it, but still stops
-// exactly at the failed assertion).
+// Break into the debugger, per compiler. clang spells it __builtin_debugtrap (not
+// __builtin_debugbreak, which is MSVC's name and does not exist as a clang builtin).
+// gcc has neither, so it gets __builtin_trap: that kills the process instead of
+// pausing it, but it still stops exactly at the failed assertion.
 #if defined(_MSC_VER)
 #define MACH_DEBUGBREAK() __debugbreak()
 #elif defined(__clang__)
-#define MACH_DEBUGBREAK() __builtin_debugbreak()
+#define MACH_DEBUGBREAK() __builtin_debugtrap()
 #else
 #define MACH_DEBUGBREAK() __builtin_trap()
 #endif
 
 #ifdef NDEBUG
-#define MACH_DEBUG_ASSERT(x) (void)(x)
+// The operand of sizeof is unevaluated, so the condition does not run in a release
+// build -- MACH_DEBUG_ASSERT(expensive_check(w)) costs nothing and has no side
+// effects. It still counts as a *use* of whatever it names, which keeps -Wunused
+// quiet for variables that only appear inside an assertion.
+#define MACH_DEBUG_ASSERT(x) ((void)sizeof((x) ? 1 : 0))
 #define MACH_LOG_DEBUG(fmt, ...) (void)0
 #else
 #define MACH_DEBUG_ASSERT(x)                                                                       \
@@ -17001,6 +17014,8 @@ typedef struct Mach_GLApi {
     void (*TexImage2D)(u32 target, i32 level, i32 internal_format, i32 w, i32 h, i32 border,
                        u32 format, u32 type, const void *pixels);
     void (*TexParameteri)(u32 target, u32 pname, i32 param);
+    void (*TexSubImage2D)(u32 target, i32 level, i32 x, i32 y, i32 w, i32 h, u32 format, u32 type,
+                          const void *pixels);
     void (*Uniform1i)(i32 location, i32 v0);
     void (*Uniform2f)(i32 location, f32 v0, f32 v1);
     void (*UseProgram)(u32 program);
@@ -17015,6 +17030,20 @@ typedef struct {
     f32 w, h;
 } Mach_R2D_Texture;
 
+// A rectangle of a texture: what an atlas hands back, and what the region draws take.
+// Many regions naming one texture is the whole point -- the batch only breaks when the
+// texture id changes, so sprites that share an atlas draw in a single call.
+//
+// UVs are baked in at pack time so a draw stays pure arithmetic, and w/h are the
+// region's pixel size, so `scale` means the same thing it does for a whole texture.
+// This is a value, not a handle: it owns nothing, and it dies with the texture it names.
+typedef struct {
+    u32 tex;    // texture the region lives in; 0 means invalid
+    f32 u0, v0; // normalized UV of the top-left corner
+    f32 u1, v1; // ... and of the bottom-right
+    f32 w, h;   // size in pixels
+} Mach_R2D_Region;
+
 // =============================================================================
 // font: 8x8 bitmap font
 // =============================================================================
@@ -17027,6 +17056,12 @@ typedef struct {
     Mach_R2D_Texture atlas; // RGBA: white glyph pixels with alpha; tinted per-vertex
     i32 glyph_w, glyph_h;   // glyph cell size in pixels
     i32 advance;            // horizontal step per character
+
+    // The sheet is 16x6 = 96 cells but there are only 95 printable glyphs, so the last
+    // cell is free. It holds a block of opaque white, which is where untextured draws
+    // (fill_rect and friends) sample from by default. That is what lets text and solid
+    // fills share one texture, and therefore one draw call: see Mach_Renderer.white.
+    Mach_R2D_Region white;
 } Mach_Font;
 
 Mach_Font *mach_font_create(struct Mach_Renderer *r);
@@ -17096,6 +17131,17 @@ typedef struct {
 #define MACH_R2D_MAX_VERTS 8192
 #define MACH_R2D_MAX_INDICES 16384
 
+// Indices are u16, so the vertex ceiling has to fit in one. Raising MACH_R2D_MAX_VERTS
+// past this would silently wrap the index cast in mach_r2d_quad rather than fail, and a
+// wrapped index draws garbage geometry that looks like a renderer bug.
+#if MACH_R2D_MAX_VERTS > 65536
+#error "MACH_R2D_MAX_VERTS must fit in the u16 index type (max 65536)"
+#endif
+
+// How deep clip rects may nest. Clay emits a scissor pair per clipped container, so
+// nesting is not exotic: a scrolling panel inside a scrolling panel is two.
+#define MACH_R2D_MAX_CLIPS 8
+
 typedef struct Mach_Renderer {
     RGFW_window *window;
     Mach_GLApi gl; // loaded GL entry points (see gl.h)
@@ -17107,8 +17153,17 @@ typedef struct Mach_Renderer {
     // GL objects, created once at init.
     u32 program;
     u32 vao, vbo, ibo;
-    i32 u_screen;           // uniform: logical size, for point -> clip mapping
-    Mach_R2D_Texture white; // 1x1 white, sampled by untextured draws
+    i32 u_screen; // uniform: logical size, for point -> clip mapping
+
+    // Where the untextured draws (fill_rect, fill_poly, poly_outline) get their pixels.
+    // Defaults to the font atlas's white block, so fills batch with text.
+    //
+    // It is a plain field on purpose: point it at an atlas's white block while drawing
+    // that atlas's sprites, and the fills batch with the sprites instead -- no flush
+    // between a sprite and the selection rect drawn over it. Restore it with
+    // `r->white = r->font->white`. Two assignments, no mode flag, and the batching rule
+    // stays something you can see.
+    Mach_R2D_Region white;
 
     // The pending batch: appended by the draw calls, flushed on texture change,
     // scissor change, overflow, or present.
@@ -17116,6 +17171,22 @@ typedef struct Mach_Renderer {
     i32 vert_count, index_count;
     Mach_R2D_Vertex verts[MACH_R2D_MAX_VERTS];
     u16 indices[MACH_R2D_MAX_INDICES];
+
+    // Draws issued in the last *completed* frame -- one per flush, so this is the
+    // direct readout of how well the frame batched: a run of draws sharing a texture
+    // costs one.
+    //
+    // It reports the previous frame, not the one in progress, for the same reason fps
+    // does: the frame's last flush does not happen until mach_r2d_submit, so a HUD
+    // drawn mid-frame that read a running total would always under-report itself.
+    // Read it, don't write it.
+    i32 draw_calls;
+    i32 draw_calls_acc; // internal: flushes so far in the frame being built
+
+    // The clip stack, in window points. Each entry is already intersected with its
+    // parent, so the top of the stack is the rect actually in force.
+    f32 clips[MACH_R2D_MAX_CLIPS][4]; // x, y, w, h
+    i32 clip_depth;
 } Mach_Renderer;
 
 // Lifecycle. The window must already hold a current GL 3.3 core context.
@@ -17128,6 +17199,14 @@ void mach_r2d_resized(Mach_Renderer *r);
 
 // Frame.
 void mach_r2d_begin(Mach_Renderer *r, Mach_Color clear);
+
+// Hand the pending batch to the driver, without presenting. Splitting this out of
+// present is what lets the core time a frame's real cost: under vsync the buffer
+// swap blocks until the display is ready, so anything measured across it is
+// measuring the wait, not the work.
+void mach_r2d_submit(Mach_Renderer *r);
+
+// Submit, then swap the buffers. May block: see mach_r2d_submit.
 void mach_r2d_present(Mach_Renderer *r);
 
 // Screen-space primitives. Colors are RGBA in [0,1]; see color.h for the palette.
@@ -17138,8 +17217,12 @@ void mach_r2d_poly_outline(Mach_Renderer *r, const Mach_Vec2 *pts, i32 n,
                            Mach_Color color); // closed loop, <=16 pts
 void mach_r2d_text(Mach_Renderer *r, f32 x, f32 y, f32 scale, const char *text, Mach_Color color);
 
-// Clip rect in window points (the UI's scissor). Draws between begin/end are
-// clipped; nesting is not supported.
+// Clip rect in window points (the UI's scissor). Draws between begin/end are clipped.
+//
+// Nesting works, up to MACH_R2D_MAX_CLIPS: an inner rect is intersected with the one
+// enclosing it, so a child can only shrink its parent's window, never escape it, and
+// clip_end restores the parent rather than dropping clipping altogether. Clay depends
+// on this -- it emits a scissor pair per clipped container, and they nest.
 void mach_r2d_clip_begin(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h);
 void mach_r2d_clip_end(Mach_Renderer *r);
 
@@ -17154,8 +17237,74 @@ Mach_R2D_Texture mach_r2d_load_texture(Mach_Renderer *r, const char *path);
 Mach_R2D_Texture mach_r2d_texture_from_memory(Mach_Renderer *r, const void *data, i32 size,
                                               b32 nearest);
 void mach_r2d_destroy_texture(Mach_Renderer *r, Mach_R2D_Texture *tex);
+// Draw a whole texture as one quad. This is the escape hatch for a background image
+// or a one-off; anything drawn many times per frame wants to be an atlas region, or
+// it will break the batch on every call.
 void mach_r2d_sprite(Mach_Renderer *r, Mach_R2D_Texture tex, f32 x, f32 y, f32 scale,
                      Mach_Color tint);
+
+// --- Atlas and regions ------------------------------------------------------
+//
+// The batch only breaks when the texture id changes, so N sprites in N textures cost
+// N draws. Pack them into one atlas and they cost one. That is the entire feature.
+//
+// Deliberately not here, because nothing concrete needs them yet: rotation (this is an
+// isometric engine -- a 90-degree turn is a second baked region, not a runtime
+// transform), flip flags (a horizontal flip is just swapping u0 and u1 on the region
+// you already hold), and sorting (painter's order stands; the consumer sorts).
+
+// A rectangle of a texture you packed yourself, given a pixel rect. This is the whole
+// "I already have a sprite sheet" path: no packer, no engine bookkeeping.
+Mach_R2D_Region mach_r2d_region_of(Mach_R2D_Texture tex, f32 x, f32 y, f32 w, f32 h);
+
+// Draw a region at its own pixel size times `scale`.
+void mach_r2d_region(Mach_Renderer *r, Mach_R2D_Region s, f32 x, f32 y, f32 scale, Mach_Color tint);
+
+// Draw a region stretched into an explicit destination rect (iso tiles, bars).
+void mach_r2d_region_rect(Mach_Renderer *r, Mach_R2D_Region s, f32 x, f32 y, f32 w, f32 h,
+                          Mach_Color tint);
+
+// A transparent gutter between packed regions, so a neighbour's pixels cannot bleed in
+// when the sampler lands between texels at a fractional zoom.
+#define MACH_R2D_ATLAS_PAD 1
+
+// A texture that sprites are packed into at load time, so many sprites share one id and
+// draw in one batch. Shelf-packed: images are placed left to right along a row, and when
+// the row fills a new one starts below the tallest so far. That is near-optimal for
+// same-height art, which is what a tile game has, and it is thirty lines instead of the
+// three hundred a general packer would take.
+//
+// The consumer owns the atlas, exactly like a Mach_Arena: declare it, fill it, destroy
+// it. The engine never tracks it. Regions are values, not handles -- destroying the
+// atlas invalidates every region it ever handed out, and noticing that is the caller's
+// job. It is append-only: no repack, no eviction. To change the art, rebuild it.
+typedef struct {
+    Mach_R2D_Texture tex;  // the texture every region of this atlas names
+    Mach_R2D_Region white; // reserved opaque-white block; see Mach_Renderer.white
+    i32 w, h;              // atlas size in pixels
+    i32 shelf_x;           // cursor along the current shelf
+    i32 shelf_y;           // the current shelf's top edge
+    i32 shelf_h;           // the current shelf's height, padding included
+    i32 count;             // regions packed so far
+} Mach_R2D_Atlas;
+
+// Create an empty w x h atlas, cleared to transparent, nearest-filtered (pixel art).
+// Reserves a small white block as its first region and publishes it as `white`, so
+// untextured fills can be made to batch with this atlas's sprites.
+b32 mach_r2d_atlas_create(Mach_Renderer *r, Mach_R2D_Atlas *a, i32 w, i32 h);
+
+// Pack an image and upload its pixels. Returns the region, or a zeroed one (.tex == 0)
+// if it does not fit. The pixels are copied: the caller still owns `img` and may free it
+// the moment this returns.
+Mach_R2D_Region mach_r2d_atlas_add(Mach_Renderer *r, Mach_R2D_Atlas *a, Mach_Image img);
+
+// Decode and pack in one step, the way mach_r2d_texture_from_memory does.
+Mach_R2D_Region mach_r2d_atlas_add_file(Mach_Renderer *r, Mach_R2D_Atlas *a, const char *path);
+Mach_R2D_Region mach_r2d_atlas_add_memory(Mach_Renderer *r, Mach_R2D_Atlas *a, const void *data,
+                                          i32 size);
+
+// Free the atlas's texture. Every region handed out beforehand is dangling afterwards.
+void mach_r2d_atlas_destroy(Mach_Renderer *r, Mach_R2D_Atlas *a);
 
 // Isometric projection helpers (no Mach_Renderer needed). `elev` is block height in
 // units; the inverse solves on the ground plane (elev 0).
@@ -17187,6 +17336,7 @@ typedef struct {
     // Keyboard, indexed by RGFW_key. key_pressed excludes OS key repeats.
     u8 key_down[RGFW_keyLast];
     u8 key_pressed[RGFW_keyLast];
+    u8 key_released[RGFW_keyLast];
 
     // Mouse, in render coordinates (window points). wheel is this frame's scroll,
     // positive away from the user.
@@ -22322,6 +22472,12 @@ void mach_clay_ui_shutdown(Mach_ClayUI *ui);
 // Per-frame. Call mach_clay_ui_begin, declare the layout with CLAY(...) / CLAY_TEXT(...),
 // then mach_clay_ui_render to draw it. `mouse`/`mouse_down` feed Clay's pointer state for
 // hover/click handling (pass zero/false when there's nothing interactive yet).
+//
+// What this binding actually draws, so you don't discover it the hard way: rectangles,
+// text, borders, and (nested) scissors. It does NOT draw Clay's image or custom
+// elements -- those commands are skipped -- and it ignores .cornerRadius, so a rounded
+// rectangle renders square. Text is capped at 255 chars per command. Each of these is a
+// concrete need away from being implemented; none is pretended to work today.
 void mach_clay_ui_begin(Mach_ClayUI *ui, Mach_Renderer *r, Clay_Vector2 mouse, b32 mouse_down);
 void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r);
 
@@ -22391,12 +22547,15 @@ typedef struct {
                        // can't produce a giant simulation step)
     i32 fps;           // frames counted over the last completed 1s window
 
-    // What a frame cost, in milliseconds: the work (update, draw, present) with
-    // the frame cap's wait excluded. This, not fps, is the headroom number --
-    // under a 60fps cap fps reads 60 whether a frame takes 2ms or 16ms, while
-    // frame_ms keeps telling the truth. frame_ms_peak is the worst frame of the
-    // last completed 1s window, which is where a hitch shows up that the average
-    // buries.
+    // What a frame cost, in milliseconds: the CPU work (update, plus handing the
+    // draws to the driver), with the vsync and frame-cap waits excluded. This, not
+    // fps, is the headroom number -- under vsync or a 60fps cap, fps reads 60
+    // whether a frame takes 2ms or 16ms, while frame_ms keeps telling the truth.
+    //
+    // It is not GPU time: the GPU may still be working on the batch when this is
+    // sampled. It answers "is the CPU keeping up", which is the question a game
+    // asks first. frame_ms_peak is the worst frame of the last completed 1s window,
+    // which is where a hitch shows up that the average buries.
     f32 frame_ms;
     f32 frame_ms_peak;
 
@@ -22407,6 +22566,13 @@ typedef struct {
 
     // Internals: window handle, policy copied out of Mach_Config, frame timing.
     RGFW_window *window;
+
+    // RGFW keeps the pointer we hand it, so the hints have to outlive mach_init. They
+    // live here rather than in a static so that the engine's own code really does keep
+    // all of its mutable state in the struct you own -- which is the property the
+    // hot-reload story depends on.
+    RGFW_glHints gl_hints;
+
     b32 running;
     Mach_Color clear_color;
     b32 escape_quits;
@@ -22458,13 +22624,26 @@ u32 mach_ticks_ms(void);
 
 #include <stdlib.h>
 
+// Every allocation mach's own code makes goes through these, so a consumer can route
+// the engine at a custom allocator by defining them before the include. Define one and
+// you must define all three. The embedded libraries keep their own allocators; this
+// covers the arena, the font atlas, and Clay's backing block.
+//
+// This is also the only portable way to reach the out-of-memory paths, which is how
+// tests/test_core.c tests them.
+#ifndef MACH_MALLOC
+#define MACH_MALLOC(size) malloc(size)
+#define MACH_CALLOC(count, size) calloc(count, size)
+#define MACH_FREE(ptr) free(ptr)
+#endif // MACH_MALLOC
+
 // (npt): Default region size in words. 8K words is 64 KiB on a 64-bit target:
 // big enough that most arenas live in one region, small enough to not over-commit.
 #define MACH_ARENA_REGION_CAPACITY (8 * 1024)
 
 static Mach_Arena_Region *mach_region_new(usize capacity) {
     usize bytes = sizeof(Mach_Arena_Region) + sizeof(uintptr_t) * capacity;
-    Mach_Arena_Region *r = (Mach_Arena_Region *)malloc(bytes);
+    Mach_Arena_Region *r = (Mach_Arena_Region *)MACH_MALLOC(bytes);
     if (!r) {
         MACH_LOG_ERROR("arena: region allocation failed (%zu bytes)", bytes);
         return NULL;
@@ -22494,10 +22673,15 @@ void *mach_arena_alloc(Mach_Arena *a, usize size) {
     }
     if (a->end->count + words > a->end->capacity) {
         usize capacity = words > MACH_ARENA_REGION_CAPACITY ? words : MACH_ARENA_REGION_CAPACITY;
-        a->end->next = mach_region_new(capacity);
-        a->end = a->end->next;
-        if (!a->end)
+        // Link the new region in only once it exists. Assigning straight into
+        // `end` would park a NULL there on failure, and the next alloc would take the
+        // empty-arena path and overwrite `begin` -- orphaning every region and every
+        // pointer the caller still holds. A failed alloc has to leave the arena usable.
+        Mach_Arena_Region *region = mach_region_new(capacity);
+        if (!region)
             return NULL;
+        a->end->next = region;
+        a->end = region;
     }
 
     void *result = &a->end->data[a->end->count];
@@ -22516,7 +22700,7 @@ void mach_arena_free(Mach_Arena *a) {
     Mach_Arena_Region *r = a->begin;
     while (r != NULL) {
         Mach_Arena_Region *next = r->next;
-        free(r);
+        MACH_FREE(r);
         r = next;
     }
     a->begin = NULL;
@@ -30643,6 +30827,7 @@ void mach_image_free(Mach_Image *img) {
     img->data = NULL;
     img->width = 0;
     img->height = 0;
+    img->channels = 0;
 }
 
 // =============================================================================
@@ -30663,14 +30848,14 @@ void mach_image_free(Mach_Image *img) {
 #define MACH_FONT_LAST_CHAR 126
 #define MACH_FONT_GLYPH_COUNT (MACH_FONT_LAST_CHAR - MACH_FONT_FIRST_CHAR + 1) // 95
 
-#define MACH_CELL 8
-#define MACH_ATLAS_COLS 16
-#define MACH_ATLAS_ROWS 6
-#define MACH_ATLAS_W (MACH_ATLAS_COLS * MACH_CELL) // 128
-#define MACH_ATLAS_H (MACH_ATLAS_ROWS * MACH_CELL) // 48
+#define MACH_FONT_CELL 8
+#define MACH_FONT_SHEET_COLS 16
+#define MACH_FONT_SHEET_ROWS 6
+#define MACH_FONT_SHEET_W (MACH_FONT_SHEET_COLS * MACH_FONT_CELL) // 128
+#define MACH_FONT_SHEET_H (MACH_FONT_SHEET_ROWS * MACH_FONT_CELL) // 48
 
 // 8x8 glyphs indexed by (ascii - MACH_FONT_FIRST_CHAR). MSB = leftmost pixel.
-static const u8 GLYPHS[MACH_FONT_GLYPH_COUNT][MACH_CELL] = {
+static const u8 GLYPHS[MACH_FONT_GLYPH_COUNT][MACH_FONT_CELL] = {
     [' ' - MACH_FONT_FIRST_CHAR] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
     ['$' - MACH_FONT_FIRST_CHAR] = {0x18, 0x3E, 0x58, 0x3C, 0x1A, 0x7C, 0x18, 0x00},
     ['(' - MACH_FONT_FIRST_CHAR] = {0x0C, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0C, 0x00},
@@ -30682,6 +30867,27 @@ static const u8 GLYPHS[MACH_FONT_GLYPH_COUNT][MACH_CELL] = {
     ['%' - MACH_FONT_FIRST_CHAR] = {0x62, 0x66, 0x0C, 0x18, 0x30, 0x66, 0x46, 0x00},
     ['/' - MACH_FONT_FIRST_CHAR] = {0x06, 0x0C, 0x18, 0x18, 0x30, 0x60, 0xC0, 0x00},
     ['!' - MACH_FONT_FIRST_CHAR] = {0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x00},
+    ['"' - MACH_FONT_FIRST_CHAR] = {0x6C, 0x6C, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00},
+    ['#' - MACH_FONT_FIRST_CHAR] = {0x6C, 0x6C, 0xFE, 0x6C, 0xFE, 0x6C, 0x6C, 0x00},
+    ['&' - MACH_FONT_FIRST_CHAR] = {0x38, 0x6C, 0x38, 0x76, 0xDC, 0xCC, 0x76, 0x00},
+    ['\'' - MACH_FONT_FIRST_CHAR] = {0x18, 0x18, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00},
+    ['*' - MACH_FONT_FIRST_CHAR] = {0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00},
+    [';' - MACH_FONT_FIRST_CHAR] = {0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x30},
+    ['<' - MACH_FONT_FIRST_CHAR] = {0x0C, 0x18, 0x30, 0x60, 0x30, 0x18, 0x0C, 0x00},
+    ['=' - MACH_FONT_FIRST_CHAR] = {0x00, 0x00, 0x7E, 0x00, 0x7E, 0x00, 0x00, 0x00},
+    ['>' - MACH_FONT_FIRST_CHAR] = {0x60, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x60, 0x00},
+    ['?' - MACH_FONT_FIRST_CHAR] = {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x00, 0x18, 0x00},
+    ['@' - MACH_FONT_FIRST_CHAR] = {0x3C, 0x66, 0x6E, 0x6E, 0x60, 0x62, 0x3C, 0x00},
+    ['[' - MACH_FONT_FIRST_CHAR] = {0x3C, 0x30, 0x30, 0x30, 0x30, 0x30, 0x3C, 0x00},
+    ['\\' - MACH_FONT_FIRST_CHAR] = {0xC0, 0x60, 0x30, 0x30, 0x18, 0x0C, 0x06, 0x00},
+    [']' - MACH_FONT_FIRST_CHAR] = {0x3C, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x3C, 0x00},
+    ['^' - MACH_FONT_FIRST_CHAR] = {0x18, 0x3C, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00},
+    ['_' - MACH_FONT_FIRST_CHAR] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE},
+    ['`' - MACH_FONT_FIRST_CHAR] = {0x30, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    ['{' - MACH_FONT_FIRST_CHAR] = {0x0E, 0x18, 0x18, 0x70, 0x18, 0x18, 0x0E, 0x00},
+    ['|' - MACH_FONT_FIRST_CHAR] = {0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00},
+    ['}' - MACH_FONT_FIRST_CHAR] = {0x70, 0x18, 0x18, 0x0E, 0x18, 0x18, 0x70, 0x00},
+    ['~' - MACH_FONT_FIRST_CHAR] = {0x00, 0x00, 0x76, 0xDC, 0x00, 0x00, 0x00, 0x00},
     ['0' - MACH_FONT_FIRST_CHAR] = {0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00},
     ['1' - MACH_FONT_FIRST_CHAR] = {0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00},
     ['2' - MACH_FONT_FIRST_CHAR] = {0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00},
@@ -30747,53 +30953,96 @@ static const u8 GLYPHS[MACH_FONT_GLYPH_COUNT][MACH_CELL] = {
     ['z' - MACH_FONT_FIRST_CHAR] = {0x00, 0x7E, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00},
 };
 
+// The sheet has 96 cells and 95 glyphs, so cell 95 is spare. It becomes a block of
+// opaque white that untextured draws sample, which is what puts text and solid fills
+// on the same texture: a HUD of rectangles and labels then costs one draw call
+// instead of one per alternation.
+#define MACH_FONT_WHITE_CELL MACH_FONT_GLYPH_COUNT
+
 // Expand the bit table into an RGBA pixel buffer (caller frees). Set bits become
 // opaque white; everything else is transparent.
 static u32 *mach_font_build_pixels(void) {
-    u32 *px = (u32 *)calloc(MACH_ATLAS_W * MACH_ATLAS_H, sizeof(u32));
+    u32 *px = (u32 *)MACH_CALLOC(MACH_FONT_SHEET_W * MACH_FONT_SHEET_H, sizeof(u32));
     if (!px)
         return NULL;
 
     for (i32 idx = 0; idx < MACH_FONT_GLYPH_COUNT; idx++) {
-        i32 cx = (idx % MACH_ATLAS_COLS) * MACH_CELL;
-        i32 cy = (idx / MACH_ATLAS_COLS) * MACH_CELL;
-        for (i32 r = 0; r < MACH_CELL; r++) {
+        i32 cx = (idx % MACH_FONT_SHEET_COLS) * MACH_FONT_CELL;
+        i32 cy = (idx / MACH_FONT_SHEET_COLS) * MACH_FONT_CELL;
+        for (i32 r = 0; r < MACH_FONT_CELL; r++) {
             u8 bits = GLYPHS[idx][r];
-            for (i32 c = 0; c < MACH_CELL; c++) {
+            for (i32 c = 0; c < MACH_FONT_CELL; c++) {
                 if (bits & (0x80 >> c))
-                    px[(cy + r) * MACH_ATLAS_W + (cx + c)] = 0xFFFFFFFFu;
+                    px[(cy + r) * MACH_FONT_SHEET_W + (cx + c)] = 0xFFFFFFFFu;
             }
+        }
+    }
+
+    // Fill the spare cell with opaque white.
+    i32 wx = (MACH_FONT_WHITE_CELL % MACH_FONT_SHEET_COLS) * MACH_FONT_CELL;
+    i32 wy = (MACH_FONT_WHITE_CELL / MACH_FONT_SHEET_COLS) * MACH_FONT_CELL;
+    for (i32 r = 0; r < MACH_FONT_CELL; r++) {
+        for (i32 c = 0; c < MACH_FONT_CELL; c++) {
+            px[(wy + r) * MACH_FONT_SHEET_W + (wx + c)] = 0xFFFFFFFFu;
         }
     }
     return px;
 }
 
+// The white block's UVs, all four collapsed onto its center.
+//
+// This is deliberate and load-bearing. A quad interpolates u0,v0 -> u1,v1 across its
+// face, so if white spanned the cell, the samples at the quad's edges would land on
+// the texel boundary and, with any floating-point slop, round into the transparent
+// glyph next door: every fill_rect would wear a 1px fringe. Collapsing the rect to a
+// point means every sample, at every size, lands dead center of an opaque white texel.
+// The block is 8x8 rather than 1x1 for the same reason -- room to be wrong in.
+static Mach_R2D_Region mach_font_white_region(Mach_R2D_Texture atlas) {
+    f32 cx = (f32)((MACH_FONT_WHITE_CELL % MACH_FONT_SHEET_COLS) * MACH_FONT_CELL) +
+             (f32)MACH_FONT_CELL * 0.5f;
+    f32 cy = (f32)((MACH_FONT_WHITE_CELL / MACH_FONT_SHEET_COLS) * MACH_FONT_CELL) +
+             (f32)MACH_FONT_CELL * 0.5f;
+    f32 u = cx / (f32)MACH_FONT_SHEET_W;
+    f32 v = cy / (f32)MACH_FONT_SHEET_H;
+
+    Mach_R2D_Region white;
+    white.tex = atlas.id;
+    white.u0 = u;
+    white.v0 = v;
+    white.u1 = u;
+    white.v1 = v;
+    white.w = (f32)MACH_FONT_CELL;
+    white.h = (f32)MACH_FONT_CELL;
+    return white;
+}
+
 Mach_Font *mach_font_create(struct Mach_Renderer *r) {
-    Mach_Font *font = (Mach_Font *)calloc(1, sizeof(Mach_Font));
+    Mach_Font *font = (Mach_Font *)MACH_CALLOC(1, sizeof(Mach_Font));
     if (!font)
         return NULL;
 
-    font->glyph_w = MACH_CELL;
-    font->glyph_h = MACH_CELL;
-    font->advance = MACH_CELL + 1;
+    font->glyph_w = MACH_FONT_CELL;
+    font->glyph_h = MACH_FONT_CELL;
+    font->advance = MACH_FONT_CELL + 1;
 
     u32 *px = mach_font_build_pixels();
     if (!px) {
-        free(font);
+        MACH_FREE(font);
         return NULL;
     }
 
-    font->atlas =
-        mach_r2d_texture_from_pixels((Mach_Renderer *)r, px, MACH_ATLAS_W, MACH_ATLAS_H, MACH_TRUE);
-    free(px);
+    font->atlas = mach_r2d_texture_from_pixels((Mach_Renderer *)r, px, MACH_FONT_SHEET_W,
+                                               MACH_FONT_SHEET_H, MACH_TRUE);
+    MACH_FREE(px);
     if (!font->atlas.id) {
         MACH_LOG_ERROR("mach_font_create: atlas texture creation failed");
-        free(font);
+        MACH_FREE(font);
         return NULL;
     }
+    font->white = mach_font_white_region(font->atlas);
 
-    MACH_LOG_INFO("font atlas created (%dx%d RGBA, %d glyphs)", MACH_ATLAS_W, MACH_ATLAS_H,
-                  MACH_FONT_GLYPH_COUNT);
+    MACH_LOG_INFO("font atlas created (%dx%d RGBA, %d glyphs + white)", MACH_FONT_SHEET_W,
+                  MACH_FONT_SHEET_H, MACH_FONT_GLYPH_COUNT);
     return font;
 }
 
@@ -30801,7 +31050,7 @@ void mach_font_destroy(struct Mach_Renderer *r, Mach_Font *font) {
     if (!font)
         return;
     mach_r2d_destroy_texture((Mach_Renderer *)r, &font->atlas);
-    free(font);
+    MACH_FREE(font);
 }
 
 b32 mach_font_glyph_uv(const Mach_Font *font, char ch, f32 *u0, f32 *v0, f32 *u1, f32 *v1) {
@@ -30810,12 +31059,12 @@ b32 mach_font_glyph_uv(const Mach_Font *font, char ch, f32 *u0, f32 *v0, f32 *u1
     if (c < MACH_FONT_FIRST_CHAR || c > MACH_FONT_LAST_CHAR)
         return MACH_FALSE;
     i32 idx = c - MACH_FONT_FIRST_CHAR;
-    f32 x = (f32)((idx % MACH_ATLAS_COLS) * MACH_CELL);
-    f32 y = (f32)((idx / MACH_ATLAS_COLS) * MACH_CELL);
-    *u0 = x / (f32)MACH_ATLAS_W;
-    *v0 = y / (f32)MACH_ATLAS_H;
-    *u1 = (x + (f32)MACH_CELL) / (f32)MACH_ATLAS_W;
-    *v1 = (y + (f32)MACH_CELL) / (f32)MACH_ATLAS_H;
+    f32 x = (f32)((idx % MACH_FONT_SHEET_COLS) * MACH_FONT_CELL);
+    f32 y = (f32)((idx / MACH_FONT_SHEET_COLS) * MACH_FONT_CELL);
+    *u0 = x / (f32)MACH_FONT_SHEET_W;
+    *v0 = y / (f32)MACH_FONT_SHEET_H;
+    *u1 = (x + (f32)MACH_FONT_CELL) / (f32)MACH_FONT_SHEET_W;
+    *v1 = (y + (f32)MACH_FONT_CELL) / (f32)MACH_FONT_SHEET_H;
     return MACH_TRUE;
 }
 
@@ -30904,6 +31153,7 @@ static b32 mach_r2d_gl_load(Mach_GLApi *gl) {
     MACH_GL_LOAD(ShaderSource);
     MACH_GL_LOAD(TexImage2D);
     MACH_GL_LOAD(TexParameteri);
+    MACH_GL_LOAD(TexSubImage2D);
     MACH_GL_LOAD(Uniform1i);
     MACH_GL_LOAD(Uniform2f);
     MACH_GL_LOAD(UseProgram);
@@ -30942,6 +31192,10 @@ static void mach_r2d_apply_window_size(Mach_Renderer *r) {
     r->gl.Viewport(0, 0, r->fb_width, r->fb_height);
 }
 
+// Bring up the renderer against an existing GL context. Every failure after the
+// first allocation unwinds through mach_r2d_shutdown, which null-checks each handle
+// and so is safe on a half-built renderer: a failed init leaves nothing behind, and
+// the caller only has to close the window.
 b32 mach_r2d_init(Mach_Renderer *r, RGFW_window *window) {
     r->window = window;
 
@@ -30949,10 +31203,18 @@ b32 mach_r2d_init(Mach_Renderer *r, RGFW_window *window) {
         return MACH_FALSE;
     const Mach_GLApi *gl = &r->gl;
 
+    // Both shaders are compiled before either is checked, so one can succeed while
+    // the other fails. Drop whichever survived: returning here would otherwise leak
+    // it, and a shader outlives the function that made it.
     u32 vs = mach_r2d_compile_shader(gl, GL_VERTEX_SHADER, R2D_VERT_SRC);
     u32 fs = mach_r2d_compile_shader(gl, GL_FRAGMENT_SHADER, R2D_FRAG_SRC);
-    if (!vs || !fs)
+    if (!vs || !fs) {
+        if (vs)
+            gl->DeleteShader(vs);
+        if (fs)
+            gl->DeleteShader(fs);
         return MACH_FALSE;
+    }
     r->program = gl->CreateProgram();
     gl->AttachShader(r->program, vs);
     gl->AttachShader(r->program, fs);
@@ -30965,6 +31227,7 @@ b32 mach_r2d_init(Mach_Renderer *r, RGFW_window *window) {
         char log[512];
         gl->GetProgramInfoLog(r->program, sizeof(log), NULL, log);
         MACH_LOG_ERROR("program link failed: %s", log);
+        mach_r2d_shutdown(r);
         return MACH_FALSE;
     }
     r->u_screen = gl->GetUniformLocation(r->program, "u_screen");
@@ -30994,17 +31257,18 @@ b32 mach_r2d_init(Mach_Renderer *r, RGFW_window *window) {
     gl->BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     gl->ActiveTexture(GL_TEXTURE0);
 
-    u32 white_px = 0xFFFFFFFFu;
-    r->white = mach_r2d_texture_from_pixels(r, &white_px, 1, 1, MACH_TRUE);
-    if (!r->white.id)
-        return MACH_FALSE;
-    r->batch_tex = r->white.id;
-
     mach_r2d_apply_window_size(r);
 
+    // The font has to exist before white does: white is a block inside the font's
+    // sheet, not a texture of its own. That is the whole batching trick -- fills and
+    // text sample the same texture, so they never break the batch apart.
     r->font = mach_font_create(r);
-    if (!r->font)
+    if (!r->font) {
+        mach_r2d_shutdown(r);
         return MACH_FALSE;
+    }
+    r->white = r->font->white;
+    r->batch_tex = r->white.tex;
 
     MACH_LOG_INFO("2D renderer ready (%dx%d points, %dx%d px, GL %s)", r->width, r->height,
                   r->fb_width, r->fb_height, (const char *)gl->GetString(GL_VERSION));
@@ -31013,12 +31277,13 @@ b32 mach_r2d_init(Mach_Renderer *r, RGFW_window *window) {
 
 void mach_r2d_shutdown(Mach_Renderer *r) {
     const Mach_GLApi *gl = &r->gl;
+    // `white` is a region of the font's sheet, not a texture we own, so destroying the
+    // font destroys it. Deleting it separately here would be a double free.
     if (r->font) {
         mach_font_destroy(r, r->font);
         r->font = NULL;
     }
-    if (r->white.id)
-        mach_r2d_destroy_texture(r, &r->white);
+    r->white = (Mach_R2D_Region){0};
     if (r->program) {
         gl->DeleteProgram(r->program);
         r->program = 0;
@@ -31055,6 +31320,7 @@ static void mach_r2d_flush(Mach_Renderer *r) {
                       r->indices);
     gl->BindTexture(GL_TEXTURE_2D, r->batch_tex);
     gl->DrawElements(GL_TRIANGLES, r->index_count, GL_UNSIGNED_SHORT, 0);
+    r->draw_calls_acc++;
     r->vert_count = 0;
     r->index_count = 0;
 }
@@ -31063,6 +31329,10 @@ static void mach_r2d_flush(Mach_Renderer *r) {
 // the texture changes or the batch would overflow. Returns the base vertex
 // index; the caller writes verts at verts[base + i] and absolute indices.
 static i32 mach_r2d_reserve(Mach_Renderer *r, u32 tex, i32 nverts, i32 nindices) {
+    // A single draw larger than the whole batch cannot be flushed into existence; it
+    // would just overrun. Nothing today asks for more than 16 verts, but a future
+    // batched helper might, and it should find out here rather than in the vertex array.
+    MACH_DEBUG_ASSERT(nverts <= MACH_R2D_MAX_VERTS && nindices <= MACH_R2D_MAX_INDICES);
     if (tex != r->batch_tex || r->vert_count + nverts > MACH_R2D_MAX_VERTS ||
         r->index_count + nindices > MACH_R2D_MAX_INDICES) {
         mach_r2d_flush(r);
@@ -31113,27 +31383,43 @@ void mach_r2d_begin(Mach_Renderer *r, Mach_Color clear) {
     gl->BindBuffer(GL_ARRAY_BUFFER, r->vbo);
     r->vert_count = 0;
     r->index_count = 0;
-    r->batch_tex = r->white.id;
+    // Note this does not reset r->white: the consumer owns which white block is in
+    // force, and silently repointing it every frame would be a nasty surprise.
+    r->batch_tex = r->white.tex;
+
+    // The frame that just ended is fully flushed by now (mach_r2d_submit ran in
+    // mach_frame_end), so its total is final: publish it and start counting again.
+    r->draw_calls = r->draw_calls_acc;
+    r->draw_calls_acc = 0;
+
+    // A frame that forgot a clip_end must not clip the next one.
+    r->clip_depth = 0;
+    gl->Disable(GL_SCISSOR_TEST);
+}
+
+void mach_r2d_submit(Mach_Renderer *r) {
+    mach_r2d_flush(r);
 }
 
 void mach_r2d_present(Mach_Renderer *r) {
-    mach_r2d_flush(r);
+    mach_r2d_submit(r);
     RGFW_window_swapBuffers_OpenGL(r->window);
 }
 
 // --- Primitives -------------------------------------------------------------
 
 void mach_r2d_fill_rect(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h, Mach_Color color) {
-    mach_r2d_quad(r, r->white.id, x, y, w, h, 0.0f, 0.0f, 1.0f, 1.0f, color);
+    const Mach_R2D_Region *w2 = &r->white;
+    mach_r2d_quad(r, w2->tex, x, y, w, h, w2->u0, w2->v0, w2->u1, w2->v1, color);
 }
 
 // Fill a convex polygon as a triangle fan.
 void mach_r2d_fill_poly(Mach_Renderer *r, const Mach_Vec2 *pts, i32 n, Mach_Color color) {
     if (n < 3 || n > 16)
         return;
-    i32 base = mach_r2d_reserve(r, r->white.id, n, (n - 2) * 3);
+    i32 base = mach_r2d_reserve(r, r->white.tex, n, (n - 2) * 3);
     for (i32 i = 0; i < n; i++) {
-        r->verts[base + i] = mach_r2d_vertex(pts[i].x, pts[i].y, 0.0f, 0.0f, color);
+        r->verts[base + i] = mach_r2d_vertex(pts[i].x, pts[i].y, r->white.u0, r->white.v0, color);
     }
     u16 *ix = r->indices + r->index_count;
     for (i32 i = 1; i < n - 1; i++) {
@@ -31160,11 +31446,12 @@ void mach_r2d_poly_outline(Mach_Renderer *r, const Mach_Vec2 *pts, i32 n, Mach_C
         // Half-thickness normal on each side of the edge.
         f32 nx = -d.y / len * 0.5f;
         f32 ny = d.x / len * 0.5f;
-        i32 base = mach_r2d_reserve(r, r->white.id, 4, 6);
-        r->verts[base + 0] = mach_r2d_vertex(p.x + nx, p.y + ny, 0.0f, 0.0f, color);
-        r->verts[base + 1] = mach_r2d_vertex(q.x + nx, q.y + ny, 0.0f, 0.0f, color);
-        r->verts[base + 2] = mach_r2d_vertex(q.x - nx, q.y - ny, 0.0f, 0.0f, color);
-        r->verts[base + 3] = mach_r2d_vertex(p.x - nx, p.y - ny, 0.0f, 0.0f, color);
+        f32 wu = r->white.u0, wv = r->white.v0;
+        i32 base = mach_r2d_reserve(r, r->white.tex, 4, 6);
+        r->verts[base + 0] = mach_r2d_vertex(p.x + nx, p.y + ny, wu, wv, color);
+        r->verts[base + 1] = mach_r2d_vertex(q.x + nx, q.y + ny, wu, wv, color);
+        r->verts[base + 2] = mach_r2d_vertex(q.x - nx, q.y - ny, wu, wv, color);
+        r->verts[base + 3] = mach_r2d_vertex(p.x - nx, p.y - ny, wu, wv, color);
         u16 b = (u16)base;
         u16 *ix = r->indices + r->index_count;
         ix[0] = b;
@@ -31199,8 +31486,24 @@ void mach_r2d_text(Mach_Renderer *r, f32 x, f32 y, f32 scale, const char *text, 
 
 // glScissor works in framebuffer pixels with a bottom-left origin, so convert
 // from window points (y down) and scale for HiDPI.
-void mach_r2d_clip_begin(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h) {
-    mach_r2d_flush(r);
+// Put the top of the clip stack into GL, or turn the scissor off if the stack is
+// empty. Rects are stored in window points and converted here, because the
+// intersection is easier to reason about in the same space the caller used.
+static void mach_r2d_clip_apply(Mach_Renderer *r) {
+    if (r->clip_depth <= 0) {
+        r->gl.Disable(GL_SCISSOR_TEST);
+        return;
+    }
+
+    i32 top = r->clip_depth - 1;
+    if (top >= MACH_R2D_MAX_CLIPS)
+        top = MACH_R2D_MAX_CLIPS - 1; // overflowed: hold the deepest rect we kept
+
+    f32 x = r->clips[top][0];
+    f32 y = r->clips[top][1];
+    f32 w = r->clips[top][2];
+    f32 h = r->clips[top][3];
+
     f32 sx = (f32)r->fb_width / (f32)r->width;
     f32 sy = (f32)r->fb_height / (f32)r->height;
     i32 px = (i32)(x * sx);
@@ -31211,13 +31514,52 @@ void mach_r2d_clip_begin(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h) {
         pw = 0;
     if (ph < 0)
         ph = 0;
+
     r->gl.Enable(GL_SCISSOR_TEST);
     r->gl.Scissor(px, py, pw, ph);
 }
 
-void mach_r2d_clip_end(Mach_Renderer *r) {
+void mach_r2d_clip_begin(Mach_Renderer *r, f32 x, f32 y, f32 w, f32 h) {
     mach_r2d_flush(r);
-    r->gl.Disable(GL_SCISSOR_TEST);
+
+    // Intersect with the enclosing rect. A nested clip can only ever shrink its
+    // parent's window: without this, an inner panel would happily draw outside the
+    // scrolling container that owns it.
+    if (r->clip_depth > 0 && r->clip_depth <= MACH_R2D_MAX_CLIPS) {
+        const f32 *p = r->clips[r->clip_depth - 1];
+        f32 x0 = mach_max(x, p[0]);
+        f32 y0 = mach_max(y, p[1]);
+        f32 x1 = mach_min(x + w, p[0] + p[2]);
+        f32 y1 = mach_min(y + h, p[1] + p[3]);
+        x = x0;
+        y = y0;
+        w = x1 > x0 ? x1 - x0 : 0.0f;
+        h = y1 > y0 ? y1 - y0 : 0.0f;
+    }
+
+    if (r->clip_depth < MACH_R2D_MAX_CLIPS) {
+        r->clips[r->clip_depth][0] = x;
+        r->clips[r->clip_depth][1] = y;
+        r->clips[r->clip_depth][2] = w;
+        r->clips[r->clip_depth][3] = h;
+    } else {
+        MACH_LOG_ERROR("clip stack overflow (max %d deep); rect ignored", MACH_R2D_MAX_CLIPS);
+    }
+
+    // Count the push either way, so an overflowing begin still has a matching end
+    // and the stack does not desynchronize.
+    r->clip_depth++;
+    mach_r2d_clip_apply(r);
+}
+
+void mach_r2d_clip_end(Mach_Renderer *r) {
+    if (r->clip_depth <= 0) {
+        MACH_LOG_ERROR("mach_r2d_clip_end without a matching mach_r2d_clip_begin");
+        return;
+    }
+    mach_r2d_flush(r);
+    r->clip_depth--;
+    mach_r2d_clip_apply(r);
 }
 
 // --- Textures and sprites -----------------------------------------------------
@@ -31272,8 +31614,14 @@ Mach_R2D_Texture mach_r2d_texture_from_memory(Mach_Renderer *r, const void *data
 void mach_r2d_destroy_texture(Mach_Renderer *r, Mach_R2D_Texture *tex) {
     if (!tex->id)
         return;
+    // The pending batch may still be naming this texture. Draw it out before the id
+    // dies, or the next flush binds a deleted name.
+    if (tex->id == r->batch_tex)
+        mach_r2d_flush(r);
     r->gl.DeleteTextures(1, &tex->id);
     tex->id = 0;
+    tex->w = 0.0f;
+    tex->h = 0.0f;
 }
 
 void mach_r2d_sprite(Mach_Renderer *r, Mach_R2D_Texture tex, f32 x, f32 y, f32 scale,
@@ -31281,6 +31629,156 @@ void mach_r2d_sprite(Mach_Renderer *r, Mach_R2D_Texture tex, f32 x, f32 y, f32 s
     if (!tex.id)
         return;
     mach_r2d_quad(r, tex.id, x, y, tex.w * scale, tex.h * scale, 0.0f, 0.0f, 1.0f, 1.0f, tint);
+}
+
+// --- Atlas and regions --------------------------------------------------------
+//
+// The draws here are three lines each because mach_r2d_quad already took UVs: the
+// primitive an atlas needs was always in the renderer, it just was not reachable.
+
+Mach_R2D_Region mach_r2d_region_of(Mach_R2D_Texture tex, f32 x, f32 y, f32 w, f32 h) {
+    Mach_R2D_Region s = {0};
+    if (!tex.id || tex.w <= 0.0f || tex.h <= 0.0f)
+        return s;
+    s.tex = tex.id;
+    s.u0 = x / tex.w;
+    s.v0 = y / tex.h;
+    s.u1 = (x + w) / tex.w;
+    s.v1 = (y + h) / tex.h;
+    s.w = w;
+    s.h = h;
+    return s;
+}
+
+void mach_r2d_region(Mach_Renderer *r, Mach_R2D_Region s, f32 x, f32 y, f32 scale,
+                     Mach_Color tint) {
+    if (!s.tex)
+        return;
+    mach_r2d_quad(r, s.tex, x, y, s.w * scale, s.h * scale, s.u0, s.v0, s.u1, s.v1, tint);
+}
+
+void mach_r2d_region_rect(Mach_Renderer *r, Mach_R2D_Region s, f32 x, f32 y, f32 w, f32 h,
+                          Mach_Color tint) {
+    if (!s.tex)
+        return;
+    mach_r2d_quad(r, s.tex, x, y, w, h, s.u0, s.v0, s.u1, s.v1, tint);
+}
+
+b32 mach_r2d_atlas_create(Mach_Renderer *r, Mach_R2D_Atlas *a, i32 w, i32 h) {
+    if (!a || w <= 0 || h <= 0) {
+        MACH_LOG_ERROR("mach_r2d_atlas_create: bad size %dx%d", w, h);
+        return MACH_FALSE;
+    }
+    *a = (Mach_R2D_Atlas){0};
+
+    // The texture must start zeroed, not merely allocated: glTexImage2D with NULL
+    // leaves the contents undefined, and the transparent gutter between regions is the
+    // thing that stops neighbours bleeding into each other. One temporary buffer at
+    // load time, freed immediately, is a fine price for that.
+    u32 *zeros = (u32 *)MACH_CALLOC((usize)w * (usize)h, sizeof(u32));
+    if (!zeros) {
+        MACH_LOG_ERROR("mach_r2d_atlas_create: out of memory (%dx%d)", w, h);
+        return MACH_FALSE;
+    }
+    a->tex = mach_r2d_texture_from_pixels(r, zeros, w, h, MACH_TRUE);
+    MACH_FREE(zeros);
+    if (!a->tex.id)
+        return MACH_FALSE;
+
+    a->w = w;
+    a->h = h;
+
+    // Reserve white first, so it sits at (0,0) and can never be crowded out. It is a
+    // block rather than a texel for the same reason the font's is: the UVs collapse to
+    // its center, and the surrounding pixels are the margin for floating-point error.
+    u32 white_px[MACH_FONT_CELL * MACH_FONT_CELL];
+    for (usize i = 0; i < MACH_ARRAY_COUNT(white_px); i++)
+        white_px[i] = 0xFFFFFFFFu;
+
+    Mach_Image white_img;
+    white_img.data = (u8 *)white_px;
+    white_img.width = MACH_FONT_CELL;
+    white_img.height = MACH_FONT_CELL;
+    white_img.channels = 4;
+
+    Mach_R2D_Region block = mach_r2d_atlas_add(r, a, white_img);
+    if (!block.tex) {
+        mach_r2d_atlas_destroy(r, a);
+        return MACH_FALSE;
+    }
+
+    // Collapse to the block's center: see mach_font_white_region for why.
+    a->white = block;
+    a->white.u0 = a->white.u1 = (block.u0 + block.u1) * 0.5f;
+    a->white.v0 = a->white.v1 = (block.v0 + block.v1) * 0.5f;
+
+    MACH_LOG_INFO("atlas created (%dx%d RGBA)", w, h);
+    return MACH_TRUE;
+}
+
+Mach_R2D_Region mach_r2d_atlas_add(Mach_Renderer *r, Mach_R2D_Atlas *a, Mach_Image img) {
+    Mach_R2D_Region s = {0};
+    if (!a || !a->tex.id || !img.data || img.width <= 0 || img.height <= 0)
+        return s;
+
+    // Shelf packing: run along the current row, and when it fills, drop to a new row
+    // below the tallest thing placed so far.
+    i32 pw = img.width + MACH_R2D_ATLAS_PAD;
+    i32 ph = img.height + MACH_R2D_ATLAS_PAD;
+
+    if (a->shelf_x + pw > a->w) {
+        a->shelf_y += a->shelf_h;
+        a->shelf_x = 0;
+        a->shelf_h = 0;
+    }
+    if (a->shelf_y + ph > a->h) {
+        MACH_LOG_ERROR("mach_r2d_atlas_add: %dx%d does not fit in the %dx%d atlas (%d packed)",
+                       img.width, img.height, a->w, a->h, a->count);
+        return s;
+    }
+
+    i32 px = a->shelf_x;
+    i32 py = a->shelf_y;
+    a->shelf_x += pw;
+    if (ph > a->shelf_h)
+        a->shelf_h = ph;
+
+    const Mach_GLApi *gl = &r->gl;
+    gl->BindTexture(GL_TEXTURE_2D, a->tex.id);
+    gl->PixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    gl->TexSubImage2D(GL_TEXTURE_2D, 0, px, py, img.width, img.height, GL_RGBA, GL_UNSIGNED_BYTE,
+                      img.data);
+    // The upload rebound the texture behind the batch's back; put it back.
+    gl->BindTexture(GL_TEXTURE_2D, r->batch_tex);
+
+    a->count++;
+    return mach_r2d_region_of(a->tex, (f32)px, (f32)py, (f32)img.width, (f32)img.height);
+}
+
+Mach_R2D_Region mach_r2d_atlas_add_file(Mach_Renderer *r, Mach_R2D_Atlas *a, const char *path) {
+    Mach_Image img = mach_image_load(path);
+    if (!img.data)
+        return (Mach_R2D_Region){0};
+    Mach_R2D_Region s = mach_r2d_atlas_add(r, a, img);
+    mach_image_free(&img);
+    return s;
+}
+
+Mach_R2D_Region mach_r2d_atlas_add_memory(Mach_Renderer *r, Mach_R2D_Atlas *a, const void *data,
+                                          i32 size) {
+    Mach_Image img = mach_image_load_from_memory(data, size);
+    if (!img.data)
+        return (Mach_R2D_Region){0};
+    Mach_R2D_Region s = mach_r2d_atlas_add(r, a, img);
+    mach_image_free(&img);
+    return s;
+}
+
+void mach_r2d_atlas_destroy(Mach_Renderer *r, Mach_R2D_Atlas *a) {
+    if (!a)
+        return;
+    mach_r2d_destroy_texture(r, &a->tex);
+    *a = (Mach_R2D_Atlas){0};
 }
 
 // --- Isometric projection ---------------------------------------------------
@@ -31343,7 +31841,7 @@ b32 mach_clay_ui_init(Mach_ClayUI *ui, Mach_Renderer *r) {
     if (!ui || !r)
         return MACH_FALSE;
     uint32_t need = Clay_MinMemorySize();
-    ui->memory = malloc(need);
+    ui->memory = MACH_MALLOC(need);
     if (!ui->memory) {
         MACH_LOG_ERROR("mach_clay_ui_init: failed to allocate %u bytes", need);
         return MACH_FALSE;
@@ -31360,7 +31858,7 @@ b32 mach_clay_ui_init(Mach_ClayUI *ui, Mach_Renderer *r) {
 void mach_clay_ui_shutdown(Mach_ClayUI *ui) {
     if (!ui)
         return;
-    free(ui->memory);
+    MACH_FREE(ui->memory);
     ui->memory = NULL;
     ui->ctx = NULL;
     ui->ready = MACH_FALSE;
@@ -31548,14 +32046,13 @@ b32 mach_init(Mach *m, Mach_Config cfg) {
         return MACH_FALSE;
     }
 
-    // RGFW keeps the hints pointer, so they live in static storage. Written once
-    // here at init (host side only); nothing reads or writes them afterward.
-    static RGFW_glHints gl_hints;
-    gl_hints = *RGFW_getGlobalHints_OpenGL();
-    gl_hints.major = 3;
-    gl_hints.minor = 3;
-    gl_hints.profile = RGFW_glCore;
-    RGFW_setGlobalHints_OpenGL(&gl_hints);
+    // RGFW keeps the pointer, so the hints have to outlive this call: they live in the
+    // Mach the caller owns, not in a static.
+    m->gl_hints = *RGFW_getGlobalHints_OpenGL();
+    m->gl_hints.major = 3;
+    m->gl_hints.minor = 3;
+    m->gl_hints.profile = RGFW_glCore;
+    RGFW_setGlobalHints_OpenGL(&m->gl_hints);
 
     RGFW_windowFlags flags = RGFW_windowCenter | RGFW_windowOpenGL;
     if (cfg.fullscreen)
@@ -31642,6 +32139,12 @@ void mach_frame_begin(Mach *m) {
     mach_input_frame_begin(&m->input);
     RGFW_event ev;
     while (RGFW_window_checkEvent(m->window, &ev)) {
+        // Every event lands in the snapshot first, then we act on the ones the core
+        // cares about. Folding these into an else-chain would let the special cases
+        // eat the event: escape_quits used to swallow the Escape keypress outright,
+        // so a game could never see it.
+        mach_input_handle_event(&m->input, &ev);
+
         if (ev.type == RGFW_windowClose) {
             MACH_LOG_INFO("quit requested");
             m->running = MACH_FALSE;
@@ -31651,27 +32154,34 @@ void mach_frame_begin(Mach *m) {
             m->running = MACH_FALSE;
         } else if (ev.type == RGFW_windowResized) {
             mach_r2d_resized(&m->r2d);
-        } else {
-            mach_input_handle_event(&m->input, &ev);
         }
     }
 
     mach_r2d_begin(&m->r2d, m->clear_color);
 }
 
-// Finish a frame: present whatever the game rendered, sample how long the frame
-// actually cost, update the 1s FPS window, and wait out the frame cap.
+// Finish a frame: hand the draws to the driver, sample how long the frame actually
+// cost, show it, update the 1s FPS window, and wait out the frame cap.
 void mach_frame_end(Mach *m) {
-    mach_r2d_present(&m->r2d);
+    // Submit, measure, and only then swap. The swap is where vsync blocks, so a
+    // sample taken after it would be reading the wait, not the work: with vsync on
+    // (the default) frame_ms would read a flat ~16.7ms whether the frame cost 2ms or
+    // 15ms, which is exactly the question frame_ms exists to answer.
+    mach_r2d_submit(&m->r2d);
 
-    // The work this frame took, measured before the cap's wait -- this is the
+    // The work this frame took, measured before any pacing wait -- this is the
     // number that says whether there is headroom, and the only one that keeps
-    // saying it once a cap or vsync pins fps to a flat 60. Sampled after
-    // present, so it covers the draw the GPU was handed, not just the update.
+    // saying it once a cap or vsync pins fps to a flat 60. It covers the update and
+    // the draws' submission; it is CPU cost, not GPU time, and the GPU may still be
+    // chewing on the batch when this is sampled.
     u64 work_ns = mach_ticks_ns() - m->frame_start;
     m->frame_ms = (f32)work_ns / 1000000.0f;
     if (m->frame_ms > m->frame_ms_peak_acc)
         m->frame_ms_peak_acc = m->frame_ms;
+
+    // Now show the frame. Under vsync this is the wait; fps below is sampled after
+    // it, so fps keeps measuring real elapsed time while frame_ms measures work.
+    RGFW_window_swapBuffers_OpenGL(m->window);
 
     // FPS and the frame-time peak are both reported over the last completed 1s
     // window: an average hides the one 12ms frame that hitches, the peak is
@@ -31725,6 +32235,7 @@ static i32 mach_mouse_button_index(u8 rgfw_button) {
 
 void mach_input_frame_begin(Mach_Input *in) {
     memset(in->key_pressed, 0, sizeof(in->key_pressed));
+    memset(in->key_released, 0, sizeof(in->key_released));
     memset(in->mouse_pressed, 0, sizeof(in->mouse_pressed));
     memset(in->mouse_released, 0, sizeof(in->mouse_released));
     in->mouse_delta = (Mach_Vec2){0.0f, 0.0f};
@@ -31740,6 +32251,7 @@ void mach_input_handle_event(Mach_Input *in, const RGFW_event *ev) {
         break;
     case RGFW_keyReleased:
         in->key_down[ev->key.value] = 0;
+        in->key_released[ev->key.value] = 1;
         break;
     case RGFW_mouseMotion: {
         // RGFW reports absolute positions; the delta is ours to accumulate.

@@ -16,6 +16,15 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # The header is compiled by both compilers, not just the one nob defaults to.
+    # $CC picks the compiler; the sources are identical.
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [clang, gcc]
+    name: build (${{ matrix.cc }})
+    env:
+      CC: ${{ matrix.cc }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +42,11 @@ jobs:
       # cross-platform check that the RGFW/GL paths still build.
       - name: Build examples
         run: ./nob
+
+      # Builds and RUNS the unit tests. They never open a window, so they need no
+      # display: this is the only thing in CI that executes engine code.
+      - name: Run tests
+        run: ./nob test
 
       # The header is amalgamated from src/ + vendor/; fail if it is stale or if
       # any engine name collides with the X11/Win32 names RGFW pulls in.

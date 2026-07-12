@@ -21,6 +21,12 @@ void mach_clay_ui_shutdown(Mach_ClayUI *ui);
 // Per-frame. Call mach_clay_ui_begin, declare the layout with CLAY(...) / CLAY_TEXT(...),
 // then mach_clay_ui_render to draw it. `mouse`/`mouse_down` feed Clay's pointer state for
 // hover/click handling (pass zero/false when there's nothing interactive yet).
+//
+// What this binding actually draws, so you don't discover it the hard way: rectangles,
+// text, borders, and (nested) scissors. It does NOT draw Clay's image or custom
+// elements -- those commands are skipped -- and it ignores .cornerRadius, so a rounded
+// rectangle renders square. Text is capped at 255 chars per command. Each of these is a
+// concrete need away from being implemented; none is pretended to work today.
 void mach_clay_ui_begin(Mach_ClayUI *ui, Mach_Renderer *r, Clay_Vector2 mouse, b32 mouse_down);
 void mach_clay_ui_render(Mach_ClayUI *ui, Mach_Renderer *r);
 
@@ -90,12 +96,15 @@ typedef struct {
                        // can't produce a giant simulation step)
     i32 fps;           // frames counted over the last completed 1s window
 
-    // What a frame cost, in milliseconds: the work (update, draw, present) with
-    // the frame cap's wait excluded. This, not fps, is the headroom number --
-    // under a 60fps cap fps reads 60 whether a frame takes 2ms or 16ms, while
-    // frame_ms keeps telling the truth. frame_ms_peak is the worst frame of the
-    // last completed 1s window, which is where a hitch shows up that the average
-    // buries.
+    // What a frame cost, in milliseconds: the CPU work (update, plus handing the
+    // draws to the driver), with the vsync and frame-cap waits excluded. This, not
+    // fps, is the headroom number -- under vsync or a 60fps cap, fps reads 60
+    // whether a frame takes 2ms or 16ms, while frame_ms keeps telling the truth.
+    //
+    // It is not GPU time: the GPU may still be working on the batch when this is
+    // sampled. It answers "is the CPU keeping up", which is the question a game
+    // asks first. frame_ms_peak is the worst frame of the last completed 1s window,
+    // which is where a hitch shows up that the average buries.
     f32 frame_ms;
     f32 frame_ms_peak;
 
@@ -106,6 +115,13 @@ typedef struct {
 
     // Internals: window handle, policy copied out of Mach_Config, frame timing.
     RGFW_window *window;
+
+    // RGFW keeps the pointer we hand it, so the hints have to outlive mach_init. They
+    // live here rather than in a static so that the engine's own code really does keep
+    // all of its mutable state in the struct you own -- which is the property the
+    // hot-reload story depends on.
+    RGFW_glHints gl_hints;
+
     b32 running;
     Mach_Color clear_color;
     b32 escape_quits;

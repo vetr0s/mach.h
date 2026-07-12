@@ -7,13 +7,26 @@
 
 #include <stdlib.h>
 
+// Every allocation mach's own code makes goes through these, so a consumer can route
+// the engine at a custom allocator by defining them before the include. Define one and
+// you must define all three. The embedded libraries keep their own allocators; this
+// covers the arena, the font atlas, and Clay's backing block.
+//
+// This is also the only portable way to reach the out-of-memory paths, which is how
+// tests/test_core.c tests them.
+#ifndef MACH_MALLOC
+#define MACH_MALLOC(size) malloc(size)
+#define MACH_CALLOC(count, size) calloc(count, size)
+#define MACH_FREE(ptr) free(ptr)
+#endif // MACH_MALLOC
+
 // (npt): Default region size in words. 8K words is 64 KiB on a 64-bit target:
 // big enough that most arenas live in one region, small enough to not over-commit.
 #define MACH_ARENA_REGION_CAPACITY (8 * 1024)
 
 static Mach_Arena_Region *mach_region_new(usize capacity) {
     usize bytes = sizeof(Mach_Arena_Region) + sizeof(uintptr_t) * capacity;
-    Mach_Arena_Region *r = (Mach_Arena_Region *)malloc(bytes);
+    Mach_Arena_Region *r = (Mach_Arena_Region *)MACH_MALLOC(bytes);
     if (!r) {
         MACH_LOG_ERROR("arena: region allocation failed (%zu bytes)", bytes);
         return NULL;
@@ -43,10 +56,15 @@ void *mach_arena_alloc(Mach_Arena *a, usize size) {
     }
     if (a->end->count + words > a->end->capacity) {
         usize capacity = words > MACH_ARENA_REGION_CAPACITY ? words : MACH_ARENA_REGION_CAPACITY;
-        a->end->next = mach_region_new(capacity);
-        a->end = a->end->next;
-        if (!a->end)
+        // Link the new region in only once it exists. Assigning straight into
+        // `end` would park a NULL there on failure, and the next alloc would take the
+        // empty-arena path and overwrite `begin` -- orphaning every region and every
+        // pointer the caller still holds. A failed alloc has to leave the arena usable.
+        Mach_Arena_Region *region = mach_region_new(capacity);
+        if (!region)
             return NULL;
+        a->end->next = region;
+        a->end = region;
     }
 
     void *result = &a->end->data[a->end->count];
@@ -65,7 +83,7 @@ void mach_arena_free(Mach_Arena *a) {
     Mach_Arena_Region *r = a->begin;
     while (r != NULL) {
         Mach_Arena_Region *next = r->next;
-        free(r);
+        MACH_FREE(r);
         r = next;
     }
     a->begin = NULL;

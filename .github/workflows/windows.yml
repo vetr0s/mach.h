@@ -28,3 +28,8 @@ jobs:
 
       - name: Build examples
         run: .\nob.exe
+
+      # Builds and RUNS the unit tests. They never open a window, so they need no
+      # display or GL context.
+      - name: Run tests
+        run: .\nob.exe test
