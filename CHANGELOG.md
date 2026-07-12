@@ -12,6 +12,40 @@ Versions before v0.1.5 were backfilled from the commits and the release pages
 after the fact. Their published pages still read as they did at the time; this
 file is the record from here on.
 
+## v0.2.2
+
+**No behavior change.** v0.2.1's fix was right; the test guarding it was not. This
+release brings the published header in line with what's on `main` and makes the
+guard something a CI runner can actually enforce.
+
+**Precision is guarded by an invariant now, not a stopwatch.** The v0.2.1 test
+asserted a jitter bound in wall-clock time, and macOS and Windows CI promptly went
+red — not from a regression, but because a shared runner has a 4–8 ms scheduling
+noise floor. It was measuring GitHub's fleet and calling it an engine bug. Jitter
+is not a property of this code alone; it is a property of this code *on a host that
+will schedule it*, and a shared VM can be descheduled for 25 ms. Nothing in
+userspace survives that.
+
+So the fix is pinned by the rule it actually embodies, which is arithmetic and
+needs no clock: **never ask for a sleep so long that its own overshoot can carry you
+past the deadline.** Half of what remains always leaves more slack than the error,
+whatever the host's constant of proportionality happens to be.
+`mach_pace_sleep_request` is split out and swept across every wait length a real cap
+produces. The pre-v0.2.1 version, which asked for `remaining` minus a fixed 1 ms,
+fails that sweep 1007 times over — and it fails identically on a quiet laptop and a
+thrashing runner, which is the whole point.
+
+The timing test stays, and still prints the numbers (60.00 fps, ~0.003 ms jitter,
+against 48.4 fps for the naive cap), so they remain reproducible on any machine
+quiet enough to mean something. It now *asserts* only what holds on any host,
+however loaded: the wait never returns early, and anchoring beats a per-frame sleep
+— a relative claim, which a slow machine cannot fake.
+
+**The Release workflow runs the tests.** It compiled the examples and executed
+nothing, which is how v0.2.1 published while two of three platforms were failing —
+the same gap the tests were added to close in the first place. A release can no
+longer publish over a red test.
+
 ## v0.2.1
 
 **The frame cap's precision was a claim, not a fact — now it's a fact.** v0.2.0

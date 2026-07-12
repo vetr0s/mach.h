@@ -12,7 +12,7 @@
 // Semantic versioning: MAJOR.MINOR.PATCH
 #define MACH_VERSION_MAJOR 0
 #define MACH_VERSION_MINOR 2
-#define MACH_VERSION_PATCH 1
+#define MACH_VERSION_PATCH 2
 
 // Sized integer aliases. Define MACH_INT_DEFINED before including mach.h if
 // your project already typedefs these names (they must match these widths).
