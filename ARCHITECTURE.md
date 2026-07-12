@@ -179,15 +179,27 @@ fps: the sleep asks for ~15.6 ms, overshoots the margin outright, and the spin
 that was supposed to land you on the mark never executes. The cap silently
 degrades to whatever the scheduler felt like.
 
-The wait therefore sleeps a *fraction* of what's left and re-measures, looping. It
-never needs to know the overshoot: each pass overshoots by a fraction of a smaller
-number, and the next pass sees the truth and corrects. It converges in a handful
-of syscalls, and the final millisecond is spun by hand.
+The wait therefore sleeps a *fraction* of what's left and re-measures, looping. The
+rule is: **never ask for a sleep so long that its own overshoot can carry you past
+the deadline.** Half of what remains always leaves more slack than the error,
+whatever the host's constant of proportionality turns out to be — so the wait never
+has to know the overshoot, it just has to stop betting the whole budget on one
+sleep. It converges in a handful of syscalls, and the final millisecond is spun by
+hand.
 
-Together they hold **60.00 fps with ~0.003 ms of mean jitter**. Those are not
-numbers from the author's machine that you have to take on faith —
-`tests/test_core.c` reproduces them, and the jitter assertion fails on the
-single-sleep version of the wait (which measured 1.3 ms). Run `./nob test`.
+Together they hold **60.00 fps with ~0.003 ms of mean jitter**, against **48.4 fps**
+for the naive cap. `./nob test` prints both, so the numbers are reproducible rather
+than something you take on faith.
+
+They are *reported* rather than asserted, though, and that distinction matters.
+Jitter is not a property of this code alone; it is a property of this code on a host
+that will schedule it. A shared CI runner can deschedule the whole VM for 25 ms, and
+no pacing code in userspace survives that — asserting a jitter bound there measures
+the runner and calls it a regression. So what CI actually guards is the two things
+that are true of any host, however loaded: the wait never returns early, and
+anchoring beats a per-frame sleep (a relative claim a slow machine cannot fake). The
+precision fix itself is guarded by the *invariant* — a sleep request never exceeds
+half the remaining budget — which is pure arithmetic and needs no clock at all.
 
 `Mach.frame_ms` is what a frame actually cost — the update, plus handing the
 draws to the driver — with the vsync and cap waits **excluded**, and

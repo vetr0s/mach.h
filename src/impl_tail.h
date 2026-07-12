@@ -1245,22 +1245,36 @@ static u64 mach_pace_advance(u64 deadline, u64 cap_ns, u64 now) {
     return deadline;
 }
 
+// How long to sleep, given how long is left. 0 means "stop sleeping and spin".
+//
+// The invariant, and the whole lesson of the bug this replaced: never ask for a sleep so
+// long that its own overshoot can carry you past the deadline. Since the overshoot scales
+// with the request, asking for at most *half* of what is left guarantees the slack always
+// exceeds the error, whatever the host's constant of proportionality turns out to be. The
+// old code asked for nearly all of it -- remaining minus a fixed 1ms -- and at 60fps the
+// overshoot on that request was several times the margin, so it sailed past the deadline
+// and the spin never ran.
+//
+// Pure, so tests/test_core.c can assert the invariant without a clock.
+static u64 mach_pace_sleep_request(u64 remaining) {
+    if (remaining <= MACH_SPIN_MARGIN_NS)
+        return 0;
+    return (remaining - MACH_SPIN_MARGIN_NS) / 2;
+}
+
 static void mach_wait_until_ns(u64 deadline) {
-    // Sleep down toward the deadline, re-measuring each pass. Asking for half of what is
-    // left means the overshoot is half the error it would otherwise be, and the next
-    // pass sees it and works from the truth rather than from an assumption.
+    // Sleep down toward the deadline, re-measuring each pass. Each sleep overshoots by a
+    // fraction of a smaller number than the last, and the next pass sees where it
+    // actually landed rather than where it assumed it would.
     for (;;) {
         u64 now = mach_ticks_ns();
         if (now >= deadline)
             return;
 
         u64 remaining = deadline - now;
-        if (remaining <= MACH_SPIN_MARGIN_NS)
-            break; // close enough: spin the rest
-
-        u64 ns = (remaining - MACH_SPIN_MARGIN_NS) / 2;
+        u64 ns = mach_pace_sleep_request(remaining);
         if (ns == 0)
-            break;
+            break; // close enough: spin the rest
 #if defined(_WIN32)
         DWORD ms = (DWORD)(ns / 1000000ull); // round *down*: never sleep past the deadline
         if (ms == 0)

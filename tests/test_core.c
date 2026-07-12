@@ -441,54 +441,63 @@ static void test_pacing_holds_the_rate(void) {
     }
     f64 naive_fps = (f64)frames / ((f64)(mach_ticks_ns() - n0) / 1000000000.0);
 
-    // How much lateness does this host inflict on its own? A wait shorter than the spin
-    // margin never sleeps -- it goes straight to the spin -- so whatever lateness it
-    // still shows is the scheduler descheduling us, and it is the floor below which no
-    // pacing code of any kind can measure. A shared CI runner can sit at 8ms.
-    f64 noise = 0.0;
-    for (i32 i = 0; i < 20; i++) {
-        u64 target = mach_ticks_ns() + MACH_SPIN_MARGIN_NS / 2;
-        mach_wait_until_ns(target);
-        f64 late_ms = (f64)(mach_ticks_ns() - target) / 1000000.0;
-        noise += late_ms;
-    }
-    noise /= 20.0;
-
     printf("     target   60.00 fps  (16.67ms period, 4.00ms of work per frame)\n");
     printf("     anchored %6.2f fps  (jitter: %.3f ms mean, %.3f ms max)\n", anchored_fps,
            jitter_mean, jitter_max);
     printf("     naive    %6.2f fps  (work + a full period, no anchor)\n", naive_fps);
-    printf("     host scheduling noise floor: %.3f ms\n", noise);
 
-    // --- what holds on any machine, however loaded ---
+    // Only two things are asserted here, and both are true of any host.
+    //
+    // The absolute numbers above are NOT asserted, deliberately. Jitter is a property of
+    // this code *on a host that will schedule it*: a shared CI runner can deschedule the
+    // whole VM for 25ms, and no pacing code in userspace survives that. Asserting 0.5ms
+    // there measures GitHub's fleet and calls it a regression -- which is exactly what an
+    // earlier version of this test did. The precision invariant is guarded instead by
+    // test_pacing_sleep_request, which needs no clock at all. Numbers here are reported
+    // so a human can read them on a machine that is quiet enough to mean something.
 
     // The wait never returns early. If it did, the cap would not be a cap.
     CHECK(woke_early == 0);
 
-    // Anchoring beats sleeping a period per frame. This is the claim the deadline exists
-    // to make, and it is relative, so a slow host cannot fake a pass: on a runner where
-    // the anchored loop only managed 51 fps, the naive one managed 27.
+    // Anchoring beats sleeping a period per frame. This is the claim the absolute
+    // deadline exists to make, and being relative it cannot be faked by a slow host: on
+    // the runner where the anchored loop managed only 51 fps, the naive one managed 27.
     CHECK(naive_fps < anchored_fps);
+}
 
-    // --- what only holds on a machine quiet enough to measure it ---
-    //
-    // The precision claim is real, but it is not a property of this code alone: it is a
-    // property of this code *on a host that will schedule it*. Asserting 0.5ms of jitter
-    // on a runner whose own noise floor is 8ms would be measuring the runner and calling
-    // it a regression. So we assert it only where it means something, and say plainly
-    // when we didn't.
-    if (noise < 0.2) {
-        // Lands on the deadline rather than wherever the scheduler dropped us. This is
-        // ARCHITECTURE's jitter claim, and it fails on the pre-v0.2.1 wait -- which
-        // slept past its own spin margin and so never spun -- at 1.3ms.
-        CHECK(jitter_mean < 0.5);
+// The precision half of the cap, guarded without a clock.
+//
+// The bug this pins down: the wait used to ask for one sleep of (remaining - 1ms) and
+// assume it would overshoot by less than that 1ms. But a sleep's overshoot scales with
+// its length, so at 60fps it asked for ~15.6ms, overran by ~3.6ms, and landed past the
+// deadline -- and the spin that was supposed to put it on the mark never ran. Jitter was
+// 1.9ms rather than the advertised 0.01ms.
+//
+// The fix is an invariant, not a magic number: never ask for a sleep so long that its own
+// overshoot can carry you past the deadline. Half of what remains always leaves more slack
+// than the error, whatever the host's constant of proportionality is. That is checkable as
+// pure arithmetic, on any machine, loaded or not.
+static void test_pacing_sleep_request(void) {
+    section("pacing: a sleep never gambles more than half the remaining budget");
 
-        // And the work is absorbed into the period rather than added on top of it.
-        CHECK(anchored_fps > 57.0);
-        CHECK(anchored_fps < 61.0);
-    } else {
-        printf("     (host too noisy to assert precision; rate and jitter reported only)\n");
+    // Below the spin margin we don't sleep at all -- we spin.
+    CHECK(mach_pace_sleep_request(0) == 0);
+    CHECK(mach_pace_sleep_request(MACH_SPIN_MARGIN_NS) == 0);
+    CHECK(mach_pace_sleep_request(MACH_SPIN_MARGIN_NS - 1) == 0);
+
+    // Above it, across every wait length a real cap produces (a 1000fps cap through a
+    // 10fps one), the request must leave at least half the budget in hand. The pre-fix
+    // code asked for `remaining - MACH_SPIN_MARGIN_NS`, which fails this from ~2ms up.
+    for (u64 remaining = MACH_SPIN_MARGIN_NS + 1; remaining <= 100000000ull;
+         remaining += 97321ull) {
+        u64 ns = mach_pace_sleep_request(remaining);
+        CHECK(ns <= remaining / 2);
     }
+
+    // And it has to make progress, or the loop that calls it never terminates: any wait
+    // meaningfully longer than the margin must produce a real sleep.
+    CHECK(mach_pace_sleep_request(2 * MACH_SPIN_MARGIN_NS + 2) > 0);
+    CHECK(mach_pace_sleep_request(16666666ull) > 0); // one 60fps frame
 }
 
 // --- timing -----------------------------------------------------------------
@@ -529,6 +538,7 @@ int main(void) {
     test_font_white_block();
     test_time_monotonic();
     test_pacing_deadline_arithmetic();
+    test_pacing_sleep_request();
     test_pacing_holds_the_rate();
 
     printf("\n%d checks, %d failed\n", checks, failures);
